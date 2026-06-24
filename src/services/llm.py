@@ -1,9 +1,9 @@
-import os
-import random
 import itertools
 from typing import List, Dict, Any, Optional
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from groq import Groq
+from src.config import settings
 
 class APIKeyRotator:
     """
@@ -11,16 +11,13 @@ class APIKeyRotator:
     This acts as a basic load balancer to distribute requests across multiple accounts
     and bypass free-tier rate limits.
     """
-    def __init__(self, env_var_name: str):
-        self.env_var_name = env_var_name
-        # Read the raw string, e.g., "key1,key2,key3"
-        raw_keys = os.getenv(env_var_name, "")
-        
+    def __init__(self, raw_keys: str, name_for_errors: str):
+        self.name_for_errors = name_for_errors
         # Split by comma and strip whitespaces, filtering out empty strings
         self.keys = [k.strip() for k in raw_keys.split(",") if k.strip()]
         
         if not self.keys:
-            raise ValueError(f"No API keys found for environment variable: {env_var_name}")
+            raise ValueError(f"No API keys found for: {name_for_errors}")
             
         # itertools.cycle yields keys infinitely in a round-robin order
         self._rotator = itertools.cycle(self.keys)
@@ -38,20 +35,20 @@ class LLMService:
     """
     Wraps the external calls to LLM providers (Gemini and Groq).
     Implements round-robin key rotation for load balancing.
+    Uses the latest google-genai SDK for Gemini operations.
     """
     def __init__(self):
-        # Initialize key rotators for both providers
-        self.gemini_keys = APIKeyRotator("GEMINI_API_KEYS")
-        self.groq_keys = APIKeyRotator("GROQ_API_KEYS")
+        # Initialize key rotators for both providers using config settings
+        self.gemini_keys = APIKeyRotator(settings.GEMINI_API_KEYS, "GEMINI_API_KEYS")
+        self.groq_keys = APIKeyRotator(settings.GROQ_API_KEYS, "GROQ_API_KEYS")
 
-    def _get_gemini_client(self) -> Any:
+    def _get_gemini_client(self) -> genai.Client:
         """
-        Dynamically configures and returns the Google Generative AI client
+        Dynamically configures and returns the latest Google GenAI Client
         using the next API key in rotation.
         """
         api_key = self.gemini_keys.get_next_key()
-        genai.configure(api_key=api_key)
-        return genai
+        return genai.Client(api_key=api_key)
 
     def _get_groq_client(self) -> Groq:
         """
@@ -64,17 +61,18 @@ class LLMService:
     def embed_text(self, text: str) -> List[float]:
         """
         Generates 768-dimensional embeddings using Gemini's text-embedding-004 model.
+        Uses the latest google-genai client.
         """
         if not text.strip():
             raise ValueError("Cannot embed empty text.")
             
         client = self._get_gemini_client()
-        response = client.embed_content(
-            model="models/text-embedding-004",
-            content=text,
-            task_type="retrieval_document"
+        response = client.models.embed_content(
+            model="text-embedding-004",
+            contents=text
         )
-        return response["embedding"]
+        # The new SDK returns a list of embeddings. We extract the values from the first item.
+        return response.embeddings[0].values
 
     def generate_gemini(
         self, 
@@ -88,17 +86,17 @@ class LLMService:
         """
         client = self._get_gemini_client()
         
-        config = {
-            "temperature": temperature,
-        }
-        
-        model = client.GenerativeModel(
-            model_name="gemini-1.5-flash",
-            generation_config=config,
+        # Configure generation parameters using the new SDK types
+        config = types.GenerateContentConfig(
+            temperature=temperature,
             system_instruction=system_instruction
         )
         
-        response = model.generate_content(prompt)
+        response = client.models.generate_content(
+            model="gemini-1.5-flash",
+            contents=prompt,
+            config=config
+        )
         return response.text
 
     def generate_groq(
@@ -131,6 +129,7 @@ class LLMService:
         """
         Transcribes an audio file (.ogg, .mp3, .wav) using Groq's Whisper-large-v3.
         """
+        import os
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"Audio file not found: {file_path}")
             
