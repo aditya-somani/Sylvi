@@ -12,24 +12,20 @@ def run_test():
     fact_id = db.add_fact(fact_text)
     print(f"Added Fact ID {fact_id}: '{fact_text}'")
     
+    # Test consolidated facts retrieval (includes IDs)
     facts = db.get_all_facts()
     print(f"Retrieved Facts from DB: {facts}")
-    assert fact_text in facts, "Error: Fact was not successfully retrieved!"
+    assert len(facts) == 1, "Error: Expected exactly 1 fact!"
+    assert facts[0]["id"] == fact_id, "Error: Fact ID mismatch!"
+    assert facts[0]["fact"] == fact_text, "Error: Fact text mismatch!"
     
-    # Test facts with IDs (needed for conflict resolution)
-    facts_with_ids = db.get_all_facts_with_ids()
-    print(f"Retrieved Facts with IDs: {facts_with_ids}")
-    assert len(facts_with_ids) == 1, "Error: Expected 1 fact with ID!"
-    assert facts_with_ids[0]["id"] == fact_id, "Error: Fact ID mismatch!"
-    assert facts_with_ids[0]["fact"] == fact_text, "Error: Fact text mismatch!"
-    
-    print("Profile Fact retrieval check (with and without IDs): PASSED")
+    print("Profile Fact retrieval check (with IDs): PASSED")
     
     # Clean up
     deleted = db.delete_fact(fact_id)
     print(f"Deleted Fact ID {fact_id}: {deleted}")
     
-    # 2. Test Reminders Queue (Future Proofing)
+    # 2. Test Reminders Queue
     print("\n--- Testing Reminders Queue ---")
     chat_id = "test_chat_123"
     reminder_msg = "Buy milk"

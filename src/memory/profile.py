@@ -42,7 +42,7 @@ class ProfileMemoryDB:
                 )
             """)
             
-            # Table 2: Reminders (designed to leave room for future scheduling feature)
+            # Table 2: Reminders
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS reminders (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -74,20 +74,10 @@ class ProfileMemoryDB:
             logger.info(f"Added new profile fact (ID: {last_id})")
             return last_id
 
-    def get_all_facts(self) -> List[str]:
-        """
-        Retrieves all stored facts for context injection.
-        """
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT fact FROM profile_facts ORDER BY created_at DESC")
-            rows = cursor.fetchall()
-            return [row["fact"] for row in rows]
-
-    def get_all_facts_with_ids(self) -> List[Dict[str, Any]]:
+    def get_all_facts(self) -> List[Dict[str, Any]]:
         """
         Retrieves all stored facts alongside their SQLite primary key IDs.
-        Used for dynamic memory consolidation and conflict resolution by LLM nodes.
+        Used for context injection and conflict resolution.
         """
         with self._get_connection() as conn:
             cursor = conn.cursor()
@@ -103,7 +93,7 @@ class ProfileMemoryDB:
             conn.commit()
             return cursor.rowcount > 0
 
-    # --- Reminders Operations (Future Proofing) ---
+    # --- Reminders Operations ---
 
     def add_reminder(self, chat_id: str, reminder_text: str, trigger_time: datetime) -> int:
         """
