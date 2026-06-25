@@ -1,10 +1,12 @@
 import os
+import base64
 import itertools
-from typing import List, Optional, Iterator, Any
-from PIL import Image
+from typing import List, Optional, Iterator, Any, Type
 from google import genai
 from google.genai import types
-from groq import Groq
+from langchain_groq import ChatGroq
+from langchain_core.messages import HumanMessage
+from pydantic import BaseModel
 from src.config import settings
 
 class APIKeyRotator:
@@ -33,9 +35,8 @@ class APIKeyRotator:
 
 class LLMService:
     """
-    Wraps the external calls to LLM providers (Gemini and Groq).
+    Wraps the external calls to LLM providers (ChatGroq and Gemini Embeddings).
     Implements round-robin key rotation for load balancing.
-    Uses the latest google-genai SDK for Gemini operations.
     """
     def __init__(self) -> None:
         self.gemini_keys: APIKeyRotator = APIKeyRotator(settings.GEMINI_API_KEYS, "GEMINI_API_KEYS")
@@ -49,13 +50,16 @@ class LLMService:
         api_key: str = self.gemini_keys.get_next_key()
         return genai.Client(api_key=api_key)
 
-    def _get_groq_client(self) -> Groq:
+    def _get_groq_chat(self, model: str = "llama3-70b-8192", temperature: float = 0.2) -> ChatGroq:
         """
-        Dynamically initializes and returns a Groq client
-        using the next API key in rotation.
+        Dynamically configures and returns a ChatGroq client.
         """
         api_key: str = self.groq_keys.get_next_key()
-        return Groq(api_key=api_key)
+        return ChatGroq(
+            api_key=api_key,
+            model=model,
+            temperature=temperature
+        )
 
     def embed_text(self, text: str) -> List[float]:
         """
@@ -70,7 +74,6 @@ class LLMService:
             contents=text
         )
         
-        # Cast/check return payload to prevent Pylance dynamic resolution warnings
         embeddings = getattr(response, "embeddings", None)
         if embeddings and len(embeddings) > 0:
             values = getattr(embeddings[0], "values", None)
@@ -78,87 +81,55 @@ class LLMService:
                 return values
         raise ValueError("Failed to retrieve embeddings from Gemini API response.")
 
-    def generate_gemini(
-        self, 
-        prompt: str, 
-        system_instruction: Optional[str] = None,
-        temperature: float = 0.2
-    ) -> str:
-        """
-        Generates text using Gemini 1.5 Flash.
-        """
-        client: genai.Client = self._get_gemini_client()
-        
-        config = types.GenerateContentConfig(
-            temperature=temperature,
-            system_instruction=system_instruction
-        )
-        
-        response: Any = client.models.generate_content(
-            model="gemini-1.5-flash",
-            contents=prompt,
-            config=config
-        )
-        
-        text = getattr(response, "text", None)
-        if text is not None:
-            return str(text)
-        raise ValueError("Failed to retrieve text from Gemini generation response.")
-
     def generate_groq(
         self, 
         prompt: str, 
         system_instruction: Optional[str] = None,
-        temperature: float = 0.2
+        temperature: float = 0.2,
+        model: str = "llama3-70b-8192"
     ) -> str:
         """
-        Generates text using Groq's Llama 3 (llama3-70b-8192).
+        Generates standard text completion using ChatGroq.
         """
-        client: Groq = self._get_groq_client()
-        
-        messages: List[Dict[str, str]] = []
+        chat = self._get_groq_chat(model=model, temperature=temperature)
+        messages = []
         if system_instruction:
-            messages.append({"role": "system", "content": system_instruction})
-            
-        messages.append({"role": "user", "content": prompt})
+            messages.append(("system", system_instruction))
+        messages.append(("user", prompt))
         
-        completion = client.chat.completions.create(
-            model="llama3-70b-8192",
-            messages=messages,
-            temperature=temperature
-        )
-        
-        content = completion.choices[0].message.content
-        if content is not None:
-            return str(content)
-        raise ValueError("Failed to retrieve text from Groq completion response.")
+        response = chat.invoke(messages)
+        return str(response.content)
 
-    def transcribe_voice(self, file_path: str) -> str:
+    def generate_structured_groq(
+        self,
+        prompt: str,
+        schema: Type[BaseModel],
+        system_instruction: Optional[str] = None,
+        temperature: float = 0.0,
+        model: str = "llama3-70b-8192"
+    ) -> Any:
         """
-        Transcribes an audio file using Groq's Whisper-large-v3.
+        Generates a structured Pydantic object from ChatGroq.
         """
-        if not os.path.exists(file_path):
-            raise FileNotFoundError(f"Audio file not found: {file_path}")
-            
-        client: Groq = self._get_groq_client()
+        chat = self._get_groq_chat(model=model, temperature=temperature)
+        structured_llm = chat.with_structured_output(schema)
         
-        with open(file_path, "rb") as file:
-            translation = client.audio.transcriptions.create(
-                file=(os.path.basename(file_path), file.read()),
-                model="whisper-large-v3",
-                response_format="text"
-            )
-        return str(translation).strip()
+        messages = []
+        if system_instruction:
+            messages.append(("system", system_instruction))
+        messages.append(("user", prompt))
+        
+        return structured_llm.invoke(messages)
 
     def describe_image(self, file_path: str) -> str:
         """
-        Generates a detailed semantic description of an image.
+        Generates a detailed semantic description of an image using Groq Vision.
         """
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"Image file not found: {file_path}")
             
-        client: genai.Client = self._get_gemini_client()
-        image = Image.open(file_path)
+        with open(file_path, "rb") as image_file:
+            encoded_image = base64.b64encode(image_file.read()).decode("utf-8")
         
         prompt = (
             "Analyze this image in detail. Generate a rich, descriptive, and comprehensive summary "
@@ -167,12 +138,16 @@ class LLMService:
             "to retrieve this image, so make it highly detailed and use descriptive keywords."
         )
         
-        response: Any = client.models.generate_content(
-            model="gemini-1.5-flash",
-            contents=[image, prompt]
+        chat = self._get_groq_chat(model="llama-3.2-11b-vision-preview", temperature=0.2)
+        message = HumanMessage(
+            content=[
+                {"type": "text", "text": prompt},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/jpeg;base64,{encoded_image}"},
+                },
+            ]
         )
         
-        text = getattr(response, "text", None)
-        if text is not None:
-            return str(text)
-        raise ValueError("Failed to retrieve text from Gemini image description response.")
+        response = chat.invoke([message])
+        return str(response.content)

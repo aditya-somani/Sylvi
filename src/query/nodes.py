@@ -1,7 +1,7 @@
-import json
 import logging
 from datetime import datetime
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Literal
+from pydantic import BaseModel
 
 # Import State representation
 from src.query.state import QueryState
@@ -13,70 +13,49 @@ from src.memory.profile import ProfileMemoryDB
 
 logger = logging.getLogger(__name__)
 
-# --- In-Node Helper Functions ---
 
-def parse_json_safely(text: str) -> Dict[str, Any]:
-    """Cleans markdown code fences and parses JSON safely."""
-    cleaned = text.strip()
-    if cleaned.startswith("```"):
-        lines = cleaned.splitlines()
-        if len(lines) >= 2:
-            cleaned = "\n".join(lines[1:-1]) if lines[-1].startswith("```") else "\n".join(lines[1:])
-    try:
-        return json.loads(cleaned.strip())
-    except Exception as e:
-        logger.error(f"Failed to parse JSON: {cleaned}. Error: {str(e)}")
-        # Fallback to general retrieval in case of format failure
-        return {"intent": "retrieval"}
+# --- Pydantic Schemas for Structured Outputs ---
+
+class IntentClassification(BaseModel):
+    intent: Literal["chit_chat", "reminder", "profile_query", "retrieval"]
+
+class ReminderExtractor(BaseModel):
+    reminder_text: str
+    trigger_time: str  # Format: YYYY-MM-DDTHH:MM:SS
+
+class QueryOptimizer(BaseModel):
+    search_query: str
 
 
 # --- Query Nodes ---
 
 def intent_router_node(state: QueryState) -> Dict[str, Any]:
     """
-    Acts as the entry router. Classifies user query intent and parses
-    relative time instructions (e.g. 'in 5 minutes', 'tomorrow morning')
-    using the injected current_time clock context.
+    Acts as the entry router. Classifies user query intent using structured output.
+    This is designed to be extremely fast and lightweight.
     """
     query = state["query"]
-    current_time = state["current_time"]
-    
     llm_service = LLMService()
     
     system_instruction = (
         "You are the intent router for Sylvi, a stateful personal memory copilot.\n"
-        f"Internal Clock Context (Current UTC Time): {current_time}\n\n"
-        "Your task is to classify the user's query and parse its parameters.\n\n"
-        "Classify into one of these intents:\n"
+        "Your task is to classify the user's query into one of these intents:\n"
         "1. 'chit_chat': Simple greetings ('hi', 'hello', 'hey'), thank yous, bye, or basic polite banter.\n"
-        "2. 'reminder': The user wants to schedule a reminder (e.g., 'remind me to...', 'set a reminder at...', 'remind me in 10 minutes').\n"
+        "2. 'reminder': The user wants to schedule a reminder (e.g., 'remind me to...', 'set a reminder').\n"
         "3. 'profile_query': The user is asking about details they expect you to know about them personally, "
         "their preferences, or settings (e.g., 'What is my favorite language?', 'What do you know about me?').\n"
-        "4. 'retrieval': The user is searching their saved documents, web links, or transcripts (e.g., 'What did I save about LangGraph?', 'Search my notes for Python').\n\n"
-        "Strict Formatting:\n"
-        "You MUST respond ONLY with a JSON object containing:\n"
-        '- "intent": the classified intent string.\n'
-        '- "reminder_text": (Only if intent is "reminder") The description of the task to be reminded of.\n'
-        '- "trigger_time": (Only if intent is "reminder") The absolute trigger time in YYYY-MM-DDTHH:MM:SS format, '
-        "calculated based on the user's relative expression and the Internal Clock Context.\n"
-        "  - If user says 'in the afternoon', schedule for 14:00:00.\n"
-        "  - If user says 'tomorrow morning', schedule for 09:00:00 next day.\n"
-        "  - Make sure to correctly resolve relative offsets like 'in 5 minutes' by adding to the current time.\n"
+        "4. 'retrieval': The user is searching their saved documents, web links, or transcripts (e.g., 'What did I save about LangGraph?')."
     )
     
-    prompt = f"User Message: {query}"
-    
-    response_text = llm_service.generate_groq(
-        prompt=prompt,
+    classification = llm_service.generate_structured_groq(
+        prompt=f"User Message: {query}",
+        schema=IntentClassification,
         system_instruction=system_instruction,
         temperature=0.0
     )
     
-    parsed = parse_json_safely(response_text)
-    
     return {
-        "intent": parsed.get("intent", "retrieval"),
-        "reminder_details": parsed if parsed.get("intent") == "reminder" else None
+        "intent": classification.intent
     }
 
 
@@ -94,12 +73,31 @@ def chitchat_node(state: QueryState) -> Dict[str, Any]:
 
 
 def reminder_node(state: QueryState) -> Dict[str, Any]:
-    """Saves the parsed reminder into SQLite."""
+    """Extracts reminder details using ChatGroq structured outputs and saves into SQLite."""
     chat_id = state["chat_id"]
-    details = state.get("reminder_details") or {}
+    query = state["query"]
+    current_time = state["current_time"]
     
-    text = details.get("reminder_text", "Reminder notification")
-    time_str = details.get("trigger_time")
+    llm_service = LLMService()
+    
+    system_instruction = (
+        "You are an expert information extraction assistant.\n"
+        f"Internal Clock Context (Current UTC/Local Time): {current_time}\n\n"
+        "Extract the task description to be reminded of and resolve the trigger time to absolute YYYY-MM-DDTHH:MM:SS format.\n"
+        "Make sure to correctly resolve relative offsets (like 'in 5 minutes' or 'tomorrow morning') by adding to the current time.\n"
+        "- If user says 'in the afternoon', schedule for 14:00:00 of the corresponding day.\n"
+        "- If user says 'tomorrow morning', schedule for 09:00:00 next day.\n"
+    )
+    
+    extracted = llm_service.generate_structured_groq(
+        prompt=f"User Query: {query}",
+        schema=ReminderExtractor,
+        system_instruction=system_instruction,
+        temperature=0.0
+    )
+    
+    text = extracted.reminder_text
+    time_str = extracted.trigger_time
     
     if not time_str:
         return {"answer": "I understood you wanted a reminder, but I couldn't resolve the exact time. Could you specify it?"}
@@ -130,7 +128,7 @@ def profile_query_node(state: QueryState) -> Dict[str, Any]:
 def retrieval_node(state: QueryState) -> Dict[str, Any]:
     """
     Loads both profile facts from SQLite AND matching chunks from Pinecone.
-    Retrieves facts and vectors concurrently.
+    Uses ChatGroq to optimize the query into search keywords before querying Pinecone.
     """
     query = state["query"]
     
@@ -141,8 +139,21 @@ def retrieval_node(state: QueryState) -> Dict[str, Any]:
     # 1. Load SQLite facts
     facts = db.get_all_facts()
     
-    # 2. Embed user query & search Pinecone
-    query_vector = llm_service.embed_text(query)
+    # 2. Optimize query for semantic search
+    system_instruction = (
+        "You are a search query optimizer. Given a user query, extract the core entities, keywords, "
+        "and technical terms to create a search query optimized for vector database retrieval."
+    )
+    
+    optimized = llm_service.generate_structured_groq(
+        prompt=f"Raw Query: {query}",
+        schema=QueryOptimizer,
+        system_instruction=system_instruction,
+        temperature=0.0
+    )
+    
+    # 3. Embed optimized query & search Pinecone
+    query_vector = llm_service.embed_text(optimized.search_query)
     matches = vector_db.query_vectors(query_vector=query_vector, top_k=5)
     
     return {
@@ -152,7 +163,7 @@ def retrieval_node(state: QueryState) -> Dict[str, Any]:
 
 
 def generation_node(state: QueryState) -> Dict[str, Any]:
-    """Synthesizes final RAG answer using Gemini 1.5 Flash."""
+    """Synthesizes final RAG answer using ChatGroq."""
     llm_service = LLMService()
     
     query = state["query"]
@@ -200,7 +211,7 @@ def generation_node(state: QueryState) -> Dict[str, Any]:
         f"USER QUERY: {query}\n"
     )
     
-    answer = llm_service.generate_gemini(
+    answer = llm_service.generate_groq(
         prompt=prompt,
         system_instruction=system_instruction,
         temperature=0.3

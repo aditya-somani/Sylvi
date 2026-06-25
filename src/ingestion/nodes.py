@@ -49,7 +49,7 @@ async def url_processor_node(state: IngestionState) -> Dict[str, Any]:
     )
     prompt = f"Scraped Page Content:\n\n{scraped_content}"
     
-    clean_markdown = llm_service.generate_gemini(
+    clean_markdown = llm_service.generate_groq(
         prompt=prompt,
         system_instruction=system_instruction,
         temperature=0.1
