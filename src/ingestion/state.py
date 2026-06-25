@@ -27,8 +27,3 @@ class IngestionState(TypedDict):
     # --- Metadata ---
     # Common metadata (e.g., source: "telegram", timestamp, message_id)
     metadata: Optional[Dict[str, Any]]
-
-    # --- Telemetry & Telemetry Logs ---
-    # Records processing duration per node (e.g. {"scraping_node": 240, "embedding_node": 95})
-    # Crucial for benchmarking p50/p99 latency
-    latency_ms: Optional[Dict[str, float]]

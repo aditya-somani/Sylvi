@@ -17,7 +17,7 @@ def route_by_input_type(state: IngestionState) -> str:
     Evaluates the input_type and determines which processor node
     should be executed next.
     """
-    val = state.get("input_type")
+    val = state["input_type"]
     if val in ["text", "link", "voice", "image"]:
         return val
     raise ValueError(f"Invalid input_type in state: {val}")

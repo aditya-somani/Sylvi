@@ -1,5 +1,7 @@
+import os
 import itertools
-from typing import List, Dict, Any, Optional
+from typing import List, Optional, Iterator, Any
+from PIL import Image
 from google import genai
 from google.genai import types
 from groq import Groq
@@ -12,15 +14,13 @@ class APIKeyRotator:
     and bypass free-tier rate limits.
     """
     def __init__(self, raw_keys: str, name_for_errors: str):
-        self.name_for_errors = name_for_errors
-        # Split by comma and strip whitespaces, filtering out empty strings
-        self.keys = [k.strip() for k in raw_keys.split(",") if k.strip()]
+        self.name_for_errors: str = name_for_errors
+        self.keys: List[str] = [k.strip() for k in raw_keys.split(",") if k.strip()]
         
         if not self.keys:
             raise ValueError(f"No API keys found for: {name_for_errors}")
             
-        # itertools.cycle yields keys infinitely in a round-robin order
-        self._rotator = itertools.cycle(self.keys)
+        self._rotator: Iterator[str] = itertools.cycle(self.keys)
         
     def get_next_key(self) -> str:
         """Retrieves the next available API key in the sequence."""
@@ -37,17 +37,16 @@ class LLMService:
     Implements round-robin key rotation for load balancing.
     Uses the latest google-genai SDK for Gemini operations.
     """
-    def __init__(self):
-        # Initialize key rotators for both providers using config settings
-        self.gemini_keys = APIKeyRotator(settings.GEMINI_API_KEYS, "GEMINI_API_KEYS")
-        self.groq_keys = APIKeyRotator(settings.GROQ_API_KEYS, "GROQ_API_KEYS")
+    def __init__(self) -> None:
+        self.gemini_keys: APIKeyRotator = APIKeyRotator(settings.GEMINI_API_KEYS, "GEMINI_API_KEYS")
+        self.groq_keys: APIKeyRotator = APIKeyRotator(settings.GROQ_API_KEYS, "GROQ_API_KEYS")
 
     def _get_gemini_client(self) -> genai.Client:
         """
         Dynamically configures and returns the latest Google GenAI Client
         using the next API key in rotation.
         """
-        api_key = self.gemini_keys.get_next_key()
+        api_key: str = self.gemini_keys.get_next_key()
         return genai.Client(api_key=api_key)
 
     def _get_groq_client(self) -> Groq:
@@ -55,24 +54,29 @@ class LLMService:
         Dynamically initializes and returns a Groq client
         using the next API key in rotation.
         """
-        api_key = self.groq_keys.get_next_key()
+        api_key: str = self.groq_keys.get_next_key()
         return Groq(api_key=api_key)
 
     def embed_text(self, text: str) -> List[float]:
         """
         Generates 768-dimensional embeddings using Gemini's text-embedding-004 model.
-        Uses the latest google-genai client.
         """
         if not text.strip():
             raise ValueError("Cannot embed empty text.")
             
-        client = self._get_gemini_client()
-        response = client.models.embed_content(
+        client: genai.Client = self._get_gemini_client()
+        response: Any = client.models.embed_content(
             model="text-embedding-004",
             contents=text
         )
-        # The new SDK returns a list of embeddings. We extract the values from the first item.
-        return response.embeddings[0].values
+        
+        # Cast/check return payload to prevent Pylance dynamic resolution warnings
+        embeddings = getattr(response, "embeddings", None)
+        if embeddings and len(embeddings) > 0:
+            values = getattr(embeddings[0], "values", None)
+            if values:
+                return values
+        raise ValueError("Failed to retrieve embeddings from Gemini API response.")
 
     def generate_gemini(
         self, 
@@ -81,23 +85,25 @@ class LLMService:
         temperature: float = 0.2
     ) -> str:
         """
-        Generates text using Gemini 1.5 Flash. 
-        Best suited for heavy summarization, scraping de-noising, and large context windows.
+        Generates text using Gemini 1.5 Flash.
         """
-        client = self._get_gemini_client()
+        client: genai.Client = self._get_gemini_client()
         
-        # Configure generation parameters using the new SDK types
         config = types.GenerateContentConfig(
             temperature=temperature,
             system_instruction=system_instruction
         )
         
-        response = client.models.generate_content(
+        response: Any = client.models.generate_content(
             model="gemini-1.5-flash",
             contents=prompt,
             config=config
         )
-        return response.text
+        
+        text = getattr(response, "text", None)
+        if text is not None:
+            return str(text)
+        raise ValueError("Failed to retrieve text from Gemini generation response.")
 
     def generate_groq(
         self, 
@@ -107,11 +113,10 @@ class LLMService:
     ) -> str:
         """
         Generates text using Groq's Llama 3 (llama3-70b-8192).
-        Best suited for low-latency, fast chat replies and routing decisions.
         """
-        client = self._get_groq_client()
+        client: Groq = self._get_groq_client()
         
-        messages = []
+        messages: List[Dict[str, str]] = []
         if system_instruction:
             messages.append({"role": "system", "content": system_instruction})
             
@@ -123,17 +128,19 @@ class LLMService:
             temperature=temperature
         )
         
-        return completion.choices[0].message.content
+        content = completion.choices[0].message.content
+        if content is not None:
+            return str(content)
+        raise ValueError("Failed to retrieve text from Groq completion response.")
 
     def transcribe_voice(self, file_path: str) -> str:
         """
-        Transcribes an audio file (.ogg, .mp3, .wav) using Groq's Whisper-large-v3.
+        Transcribes an audio file using Groq's Whisper-large-v3.
         """
-        import os
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"Audio file not found: {file_path}")
             
-        client = self._get_groq_client()
+        client: Groq = self._get_groq_client()
         
         with open(file_path, "rb") as file:
             translation = client.audio.transcriptions.create(
@@ -142,3 +149,30 @@ class LLMService:
                 response_format="text"
             )
         return str(translation).strip()
+
+    def describe_image(self, file_path: str) -> str:
+        """
+        Generates a detailed semantic description of an image.
+        """
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"Image file not found: {file_path}")
+            
+        client: genai.Client = self._get_gemini_client()
+        image = Image.open(file_path)
+        
+        prompt = (
+            "Analyze this image in detail. Generate a rich, descriptive, and comprehensive summary "
+            "of what is shown. Include any text visible in the image (OCR), describe the objects, "
+            "actions, style, colors, and key context. This summary will be used in a search engine "
+            "to retrieve this image, so make it highly detailed and use descriptive keywords."
+        )
+        
+        response: Any = client.models.generate_content(
+            model="gemini-1.5-flash",
+            contents=[image, prompt]
+        )
+        
+        text = getattr(response, "text", None)
+        if text is not None:
+            return str(text)
+        raise ValueError("Failed to retrieve text from Gemini image description response.")
