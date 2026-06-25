@@ -84,6 +84,17 @@ class ProfileMemoryDB:
             rows = cursor.fetchall()
             return [row["fact"] for row in rows]
 
+    def get_all_facts_with_ids(self) -> List[Dict[str, Any]]:
+        """
+        Retrieves all stored facts alongside their SQLite primary key IDs.
+        Used for dynamic memory consolidation and conflict resolution by LLM nodes.
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, fact FROM profile_facts ORDER BY created_at DESC")
+            rows = cursor.fetchall()
+            return [{"id": row["id"], "fact": row["fact"]} for row in rows]
+
     def delete_fact(self, fact_id: int) -> bool:
         """Deletes a fact by ID."""
         with self._get_connection() as conn:

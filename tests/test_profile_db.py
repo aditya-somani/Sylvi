@@ -15,7 +15,15 @@ def run_test():
     facts = db.get_all_facts()
     print(f"Retrieved Facts from DB: {facts}")
     assert fact_text in facts, "Error: Fact was not successfully retrieved!"
-    print("Profile Fact retrieval check: PASSED")
+    
+    # Test facts with IDs (needed for conflict resolution)
+    facts_with_ids = db.get_all_facts_with_ids()
+    print(f"Retrieved Facts with IDs: {facts_with_ids}")
+    assert len(facts_with_ids) == 1, "Error: Expected 1 fact with ID!"
+    assert facts_with_ids[0]["id"] == fact_id, "Error: Fact ID mismatch!"
+    assert facts_with_ids[0]["fact"] == fact_text, "Error: Fact text mismatch!"
+    
+    print("Profile Fact retrieval check (with and without IDs): PASSED")
     
     # Clean up
     deleted = db.delete_fact(fact_id)
