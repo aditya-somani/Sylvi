@@ -13,6 +13,11 @@ class Settings(BaseSettings):
     GEMINI_API_KEYS: str
     GROQ_API_KEYS: str
 
+    # Model Configurations
+    GROQ_TEXT_MODEL: str = "llama3-70b-8192"
+    GROQ_VISION_MODEL: str = "llama-3.2-11b-vision-preview"
+    GEMINI_EMBEDDING_MODEL: str = "text-embedding-004"
+
     # Vector DB
     PINECONE_API_KEY: str
     PINECONE_INDEX_NAME: str = "sylvi-memory"

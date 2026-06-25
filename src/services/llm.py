@@ -50,27 +50,28 @@ class LLMService:
         api_key: str = self.gemini_keys.get_next_key()
         return genai.Client(api_key=api_key)
 
-    def _get_groq_chat(self, model: str = "llama3-70b-8192", temperature: float = 0.2) -> ChatGroq:
+    def _get_groq_chat(self, model: Optional[str] = None, temperature: float = 0.2) -> ChatGroq:
         """
         Dynamically configures and returns a ChatGroq client.
         """
         api_key: str = self.groq_keys.get_next_key()
+        model_name = model or settings.GROQ_TEXT_MODEL
         return ChatGroq(
             api_key=api_key,
-            model=model,
+            model=model_name,
             temperature=temperature
         )
 
     def embed_text(self, text: str) -> List[float]:
         """
-        Generates 768-dimensional embeddings using Gemini's text-embedding-004 model.
+        Generates 768-dimensional embeddings using Gemini's configured model.
         """
         if not text.strip():
             raise ValueError("Cannot embed empty text.")
             
         client: genai.Client = self._get_gemini_client()
         response: Any = client.models.embed_content(
-            model="text-embedding-004",
+            model=settings.GEMINI_EMBEDDING_MODEL,
             contents=text
         )
         
@@ -86,7 +87,7 @@ class LLMService:
         prompt: str, 
         system_instruction: Optional[str] = None,
         temperature: float = 0.2,
-        model: str = "llama3-70b-8192"
+        model: Optional[str] = None
     ) -> str:
         """
         Generates standard text completion using ChatGroq.
@@ -106,7 +107,7 @@ class LLMService:
         schema: Type[BaseModel],
         system_instruction: Optional[str] = None,
         temperature: float = 0.0,
-        model: str = "llama3-70b-8192"
+        model: Optional[str] = None
     ) -> Any:
         """
         Generates a structured Pydantic object from ChatGroq.
@@ -138,7 +139,7 @@ class LLMService:
             "to retrieve this image, so make it highly detailed and use descriptive keywords."
         )
         
-        chat = self._get_groq_chat(model="llama-3.2-11b-vision-preview", temperature=0.2)
+        chat = self._get_groq_chat(model=settings.GROQ_VISION_MODEL, temperature=0.2)
         message = HumanMessage(
             content=[
                 {"type": "text", "text": prompt},
