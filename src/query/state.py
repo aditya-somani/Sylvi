@@ -25,6 +25,9 @@ class QueryState(TypedDict):
     
     # Match chunks from Pinecone
     pinecone_context: Optional[List[Dict[str, Any]]]
+    
+    # Active reminders loaded from SQL for this user
+    active_reminders: Optional[List[Dict[str, Any]]]
 
     # --- Parsed Details ---
     # Parsed reminder details if intent is 'reminder' (e.g., {'text': 'buy milk', 'trigger_time': '2026-06-25T17:00:00'})

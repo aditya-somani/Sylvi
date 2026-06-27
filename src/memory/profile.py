@@ -242,3 +242,31 @@ class ProfileMemoryDB:
                     return [{"role": row["role"], "content": row["content"]} for row in rows]
         finally:
             conn.close()
+
+    def get_reminders_by_chat(self, chat_id: str) -> List[Dict[str, Any]]:
+        """Retrieves all pending/future reminders for a specific chat_id."""
+        conn = self._get_connection()
+        try:
+            with conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT id, reminder_text, trigger_time, status 
+                        FROM reminders 
+                        WHERE chat_id = %s AND status = 'pending'
+                        ORDER BY trigger_time ASC
+                        """,
+                        (chat_id,)
+                    )
+                    rows = cursor.fetchall()
+                    results = []
+                    for row in rows:
+                        results.append({
+                            "id": row["id"],
+                            "reminder_text": row["reminder_text"],
+                            "trigger_time": row["trigger_time"].isoformat() if isinstance(row["trigger_time"], datetime) else str(row["trigger_time"]),
+                            "status": row["status"]
+                        })
+                    return results
+        finally:
+            conn.close()

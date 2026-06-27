@@ -126,6 +126,7 @@ def retrieval_node(state: QueryState) -> Dict[str, Any]:
     
     # 1. Load SQLite facts
     facts = db.get_all_facts()
+    reminders = db.get_reminders_by_chat(state["chat_id"])
     
     # 2. Optimize query for semantic search
     system_instruction = QUERY_OPTIMIZER_SYSTEM_PROMPT
@@ -143,7 +144,8 @@ def retrieval_node(state: QueryState) -> Dict[str, Any]:
     
     return {
         "profile_facts": facts,
-        "pinecone_context": matches
+        "pinecone_context": matches,
+        "active_reminders": reminders
     }
 
 
@@ -154,11 +156,20 @@ def generation_node(state: QueryState) -> Dict[str, Any]:
     query = state["query"]
     profile_facts = state.get("profile_facts") or []
     pinecone_context = state.get("pinecone_context") or []
+    active_reminders = state.get("active_reminders") or []
     
     # Format SQLite Profile section
     profile_section = "No stored profile facts found about the user."
     if profile_facts:
         profile_section = "\n".join(f"- {fact['fact']}" for fact in profile_facts)
+        
+    # Format Active Reminders section
+    reminders_section = "No active pending reminders scheduled."
+    if active_reminders:
+        reminders_section = "\n".join(
+            f"- '{r['reminder_text']}' scheduled for {r['trigger_time']}"
+            for r in active_reminders
+        )
         
     # Format Pinecone context matches
     context_section = "No saved document context matches found in vector memory."
@@ -182,6 +193,8 @@ def generation_node(state: QueryState) -> Dict[str, Any]:
     prompt = (
         f"USER PROFILE FACTS:\n"
         f"{profile_section}\n\n"
+        f"ACTIVE PENDING REMINDERS:\n"
+        f"{reminders_section}\n\n"
         f"SAVED VECTOR DOCUMENTS CONTEXT:\n"
         f"{context_section}\n\n"
         f"USER QUERY: {query}\n"
