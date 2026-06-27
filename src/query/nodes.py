@@ -113,15 +113,6 @@ def reminder_node(state: QueryState) -> Dict[str, Any]:
     }
 
 
-def profile_query_node(state: QueryState) -> Dict[str, Any]:
-    """Loads facts from SQLite for direct personal profile queries."""
-    db = ProfileMemoryDB()
-    facts = db.get_all_facts()
-    return {
-        "profile_facts": facts
-    }
-
-
 def retrieval_node(state: QueryState) -> Dict[str, Any]:
     """
     Loads both profile facts from SQLite AND matching chunks from Pinecone.

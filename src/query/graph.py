@@ -8,7 +8,6 @@ from src.query.nodes import (
     intent_router_node,
     chitchat_node,
     reminder_node,
-    profile_query_node,
     retrieval_node,
     generation_node,
     delete_fact_node
@@ -19,7 +18,9 @@ from src.query.nodes import (
 def route_intent(state: QueryState) -> str:
     """Routes execution based on the intent set by the router node."""
     val = state.get("intent")
-    if val in ["chit_chat", "reminder", "profile_query", "retrieval", "delete_profile_fact"]:
+    if val == "profile_query":
+        return "retrieval"
+    if val in ["chit_chat", "reminder", "retrieval", "delete_profile_fact"]:
         return str(val)
     return "retrieval" # Fallback
 
@@ -32,7 +33,6 @@ builder = StateGraph(QueryState)
 builder.add_node("intent_router", intent_router_node)
 builder.add_node("chitchat", chitchat_node)
 builder.add_node("reminder", reminder_node)
-builder.add_node("profile_query", profile_query_node)
 builder.add_node("retrieval", retrieval_node)
 builder.add_node("generation", generation_node)
 builder.add_node("delete_fact", delete_fact_node)
@@ -47,7 +47,6 @@ builder.add_conditional_edges(
     {
         "chit_chat": "chitchat",
         "reminder": "reminder",
-        "profile_query": "profile_query",
         "retrieval": "retrieval",
         "delete_profile_fact": "delete_fact"
     }
@@ -59,7 +58,6 @@ builder.add_edge("reminder", END)
 builder.add_edge("delete_fact", END)
 
 # Converted routes flow to the generation node
-builder.add_edge("profile_query", "generation")
 builder.add_edge("retrieval", "generation")
 builder.add_edge("generation", END)
 
