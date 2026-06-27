@@ -13,6 +13,7 @@ dependencies = [
     "langgraph>=1.2.6",
     "pillow>=12.2.0",
     "pinecone>=9.1.0",
+    "psycopg[binary]>=3.3.4",
     "pydantic-settings>=2.14.2",
     "python-dotenv>=1.2.2",
     "python-telegram-bot>=22.8",

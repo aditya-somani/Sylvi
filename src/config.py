@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     # Application
     LOG_LEVEL: str = "INFO"
     DATABASE_PATH: str = "data/sylvi_profile.db"
+    DATABASE_URL: str = ""
 
     # Automatically load from .env file if it exists
     model_config = SettingsConfigDict(
