@@ -58,6 +58,35 @@ class ProfileMemoryDB:
 
     # --- Profile Facts Operations ---
 
+    def add_chat_message(self, chat_id: str, role: str, content: str) -> None:
+        """Saves a message in the chat history table (truncated if too long, and prunes old history)."""
+        content_clean = content.strip()
+        if len(content_clean) > 500:
+            content_clean = content_clean[:500] + "... [truncated]"
+
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            # 1. Insert the new message
+            cursor.execute(
+                "INSERT INTO chat_history (chat_id, role, content) VALUES (?, ?, ?)",
+                (chat_id, role, content_clean)
+            )
+            # 2. Prune history to keep only the latest 30 messages per chat_id
+            cursor.execute(
+                """
+                DELETE FROM chat_history 
+                WHERE chat_id = ? AND id NOT IN (
+                    SELECT id FROM chat_history 
+                    WHERE chat_id = ? 
+                    ORDER BY created_at DESC 
+                    LIMIT 30
+                )
+                """,
+                (chat_id, chat_id)
+            )
+            conn.commit()
+            logger.info(f"Added and pruned chat message for {chat_id} ({role})")
+
     def add_fact(self, fact: str) -> int:
         """
         Saves a new profile fact.
@@ -142,3 +171,19 @@ class ProfileMemoryDB:
             )
             conn.commit()
             return cursor.rowcount > 0
+
+    def get_chat_history(self, chat_id: str, limit: int = 15) -> List[Dict[str, str]]:
+        """Retrieves the latest chat history for a given chat_id."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT role, content FROM chat_history 
+                WHERE chat_id = ? 
+                ORDER BY created_at ASC 
+                LIMIT ?
+                """,
+                (chat_id, limit)
+            )
+            rows = cursor.fetchall()
+            return [{"role": row["role"], "content": row["content"]} for row in rows]

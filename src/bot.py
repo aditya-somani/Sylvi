@@ -35,6 +35,7 @@ async def ingestion_worker(queue: asyncio.Queue, application) -> None:
         input_type = task["input_type"]
         raw_content = task["raw_content"]
         metadata = task["metadata"]
+        processing_msg_id = task.get("processing_msg_id")
         
         try:
             # Let user know we are actively working on it
@@ -58,31 +59,55 @@ async def ingestion_worker(queue: asyncio.Queue, application) -> None:
                 except Exception as cleanup_err:
                     logger.warning(f"Failed to delete temp file {raw_content}: {str(cleanup_err)}")
             
-            chunks_count = len(final_state.get("chunks", []))
-            
-            # Reply directly to the message that triggered the ingestion!
-            await application.bot.send_message(
-                chat_id=chat_id,
-                text=(
-                    f"✅ **Memory Ingested Successfully!**\n\n"
-                    f"• **Type**: `{input_type}`\n"
-                    f"• **Information Chunks**: {chunks_count}\n\n"
-                    f"I've indexed this content in your vector memory. You can ask me about it anytime!"
-                ),
-                reply_to_message_id=message_id,
-                parse_mode="Markdown"
-            )
+            # Update the "Processing..." message in-place for a clean, non-spam success feedback
+            success_text = "✅ **Ingested successfully!** I have indexed this content in your memory."
+            if processing_msg_id:
+                try:
+                    await application.bot.edit_message_text(
+                        chat_id=chat_id,
+                        message_id=processing_msg_id,
+                        text=success_text,
+                        parse_mode="Markdown"
+                    )
+                except Exception as edit_err:
+                    logger.warning(f"Failed to edit success message: {str(edit_err)}")
+                    # Fallback to direct message
+                    await application.bot.send_message(
+                        chat_id=chat_id,
+                        text=success_text,
+                        reply_to_message_id=message_id,
+                        parse_mode="Markdown"
+                    )
+            else:
+                await application.bot.send_message(
+                    chat_id=chat_id,
+                    text=success_text,
+                    reply_to_message_id=message_id,
+                    parse_mode="Markdown"
+                )
             
         except Exception as e:
             logger.exception(f"Error processing background ingestion task for chat {chat_id}")
             
-            # Notify user of failure as a reply to their message
+            # For failures, edit the "Processing..." message to show failure status
+            if processing_msg_id:
+                try:
+                    await application.bot.edit_message_text(
+                        chat_id=chat_id,
+                        message_id=processing_msg_id,
+                        text="❌ Ingestion Failed.",
+                        parse_mode="Markdown"
+                    )
+                except Exception as edit_err:
+                    logger.warning(f"Failed to edit failure message status: {str(edit_err)}")
+            
+            # Notify user of failure as a NEW reply to their original message, detailing the error context
             try:
                 await application.bot.send_message(
                     chat_id=chat_id,
                     text=(
                         f"❌ **Ingestion Failed**\n\n"
-                        f"I had trouble digesting that {input_type} memory.\n"
+                        f"I had trouble digesting that memory.\n"
                         f"**Error**: {str(e)}"
                     ),
                     reply_to_message_id=message_id,
@@ -215,10 +240,10 @@ async def voice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not voice:
         return
         
-    await update.message.reply_text(
-        "🎙️ **Voice note received.**\nTranscribing and indexing in the background...",
-        reply_to_message_id=update.message.message_id,
-        parse_mode="Markdown"
+    # Send single clean status message and capture its ID
+    processing_msg = await update.message.reply_text(
+        "⏳ Processing...",
+        reply_to_message_id=update.message.message_id
     )
     
     # Download file using telegram API
@@ -233,6 +258,7 @@ async def voice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "message_id": update.message.message_id,
         "input_type": "voice",
         "raw_content": file_path,
+        "processing_msg_id": processing_msg.message_id,
         "metadata": {
             "source": "telegram",
             "message_id": str(update.message.message_id)
@@ -241,17 +267,18 @@ async def voice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Downloads image file and places it in the background worker queue."""
+    """Downloads image file and places it in the background worker queue with captions."""
     if not update.message.photo:
         return
         
     # Get highest resolution image size
     photo = update.message.photo[-1]
+    caption = update.message.caption or ""
     
-    await update.message.reply_text(
-        "🖼️ **Image received.**\nAnalyzing, captioning and indexing in the background...",
-        reply_to_message_id=update.message.message_id,
-        parse_mode="Markdown"
+    # Send status message
+    processing_msg = await update.message.reply_text(
+        "⏳ Processing...",
+        reply_to_message_id=update.message.message_id
     )
     
     # Download file
@@ -266,9 +293,11 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "message_id": update.message.message_id,
         "input_type": "image",
         "raw_content": file_path,
+        "processing_msg_id": processing_msg.message_id,
         "metadata": {
             "source": "telegram",
-            "message_id": str(update.message.message_id)
+            "message_id": str(update.message.message_id),
+            "caption": caption
         }
     })
 
@@ -277,11 +306,76 @@ async def text_and_link_handler(update: Update, context: ContextTypes.DEFAULT_TY
     """
     Checks incoming text for web links:
     - If links are found, places them into the background scraping queue.
-    - Otherwise, runs the synchronous query RAG pipeline and replies directly.
+    - If the user replied to a media/link message, extracts context.
+    - Otherwise, runs the synchronous query RAG pipeline, manages chat history, and replies directly.
     """
     text = update.message.text or ""
+    chat_id = str(update.effective_chat.id)
+    db = ProfileMemoryDB()
     
-    # 1. Parse for URLs
+    # 1. Check for replies first (Context Ingestion via Reply)
+    reply_to = update.message.reply_to_message
+    if reply_to:
+        # Check if replied-to message has a URL
+        rep_urls = []
+        if reply_to.entities:
+            for entity in reply_to.entities:
+                if entity.type == "url":
+                    url = reply_to.text[entity.offset : entity.offset + entity.length]
+                    rep_urls.append(url)
+                elif entity.type == "text_link":
+                    rep_urls.append(entity.url)
+                    
+        if rep_urls:
+            queue = context.application.bot_data["ingestion_queue"]
+            processing_msg = await update.message.reply_text(
+                "⏳ Processing...",
+                reply_to_message_id=update.message.message_id
+            )
+            for url in rep_urls:
+                await queue.put({
+                    "chat_id": update.effective_chat.id,
+                    "message_id": update.message.message_id,
+                    "input_type": "link",
+                    "raw_content": url,
+                    "processing_msg_id": processing_msg.message_id,
+                    "metadata": {
+                        "source": "telegram",
+                        "message_id": str(update.message.message_id),
+                        "source_url": url,
+                        "user_annotation": text
+                    }
+                })
+            return
+            
+        # Check if replied-to message has a photo
+        if reply_to.photo:
+            photo = reply_to.photo[-1]
+            processing_msg = await update.message.reply_text(
+                "⏳ Processing...",
+                reply_to_message_id=update.message.message_id
+            )
+            
+            file = await context.bot.get_file(photo.file_id)
+            file_path = os.path.join("temp_downloads", f"{photo.file_id}.jpg")
+            await file.download_to_drive(file_path)
+            
+            queue = context.application.bot_data["ingestion_queue"]
+            await queue.put({
+                "chat_id": update.effective_chat.id,
+                "message_id": update.message.message_id,
+                "input_type": "image",
+                "raw_content": file_path,
+                "processing_msg_id": processing_msg.message_id,
+                "metadata": {
+                    "source": "telegram",
+                    "message_id": str(update.message.message_id),
+                    "caption": text
+                }
+            })
+            return
+
+    # 2. Parse for URLs in the text itself
     urls = []
     if update.message.entities:
         for entity in update.message.entities:
@@ -292,41 +386,65 @@ async def text_and_link_handler(update: Update, context: ContextTypes.DEFAULT_TY
                 urls.append(entity.url)
                 
     if urls:
+        # Strip URLs to obtain pure user text annotation
+        user_annot = text
+        for url in urls:
+            user_annot = user_annot.replace(url, "")
+        user_annot = user_annot.strip()
+        
         queue = context.application.bot_data["ingestion_queue"]
+        processing_msg = await update.message.reply_text(
+            "⏳ Processing...",
+            reply_to_message_id=update.message.message_id
+        )
         for url in urls:
             await queue.put({
                 "chat_id": update.effective_chat.id,
                 "message_id": update.message.message_id,
                 "input_type": "link",
                 "raw_content": url,
+                "processing_msg_id": processing_msg.message_id,
                 "metadata": {
                     "source": "telegram",
                     "message_id": str(update.message.message_id),
-                    "source_url": url
+                    "source_url": url,
+                    "user_annotation": user_annot
                 }
             })
-        await update.message.reply_text(
-            f"🔗 **Detected {len(urls)} link(s).**\nScraping and building memory index in the background...",
-            reply_to_message_id=update.message.message_id,
-            parse_mode="Markdown"
-        )
         return
 
-    # 2. Process conversational RAG Query
+    # 3. Process conversational RAG Query
     # Send interactive chat action typing indicator
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
     
     # Lazy import graph to avoid circular dependency
     from src.query.graph import query_graph
     
+    # Load recent chat history context from database
+    chat_history = db.get_chat_history(chat_id, limit=15)
+    
+    # Formulate query context if replying to a bot response
+    query_text = text
+    if reply_to:
+        ref_text = reply_to.text or reply_to.caption or "media file"
+        if reply_to.from_user and reply_to.from_user.is_bot:
+            query_text = f"[Context: Replying to Sylvi's message: \"{ref_text}\"]\n\nUser Query: {text}"
+        else:
+            query_text = f"[Context: Replying to message: \"{ref_text}\"]\n\nUser Query: {text}"
+            
     try:
         final_state = await query_graph.ainvoke({
-            "query": text,
-            "chat_id": str(update.effective_chat.id),
-            "current_time": datetime.utcnow().isoformat()
+            "query": query_text,
+            "chat_id": chat_id,
+            "current_time": datetime.utcnow().isoformat(),
+            "chat_history": chat_history
         })
         
-        answer = final_state.get("answer") or "Sorry, I couldn't process your request."
+        answer = final_state.get("answer") or "Sorry, I couldn't formulate a response."
+        
+        # Add user query (original text) and assistant response to SQLite chat history
+        db.add_chat_message(chat_id, "user", text)
+        db.add_chat_message(chat_id, "assistant", answer)
         
         await update.message.reply_text(
             answer,
@@ -335,7 +453,7 @@ async def text_and_link_handler(update: Update, context: ContextTypes.DEFAULT_TY
     except Exception as e:
         logger.exception("Error during Query Graph execution")
         await update.message.reply_text(
-            f"❌ **Query Failed**\n\nSorry, I encountered an error while retrieving facts:\n`{str(e)}`",
+            f"❌ **Query Failed**\n\nSorry, I encountered an error while processing your request:\n`{str(e)}`",
             reply_to_message_id=update.message.message_id,
             parse_mode="Markdown"
         )

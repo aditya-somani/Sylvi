@@ -1,6 +1,6 @@
 import logging
 from datetime import datetime
-from typing import Dict, Any, List, Literal
+from typing import Dict, Any, List, Literal, Optional
 from pydantic import BaseModel
 
 # Import State representation
@@ -220,3 +220,48 @@ def generation_node(state: QueryState) -> Dict[str, Any]:
     return {
         "answer": answer
     }
+
+
+class FactDeletionSelector(BaseModel):
+    fact_id: Optional[int]  # ID of the fact to delete, or None if no match
+    explanation: str        # Explanation of matching logic
+
+
+def delete_fact_node(state: QueryState) -> Dict[str, Any]:
+    """Resolves which fact the user wants to delete and removes it from SQLite."""
+    query = state["query"]
+    db = ProfileMemoryDB()
+    facts = db.get_all_facts()
+    
+    if not facts:
+        return {"answer": "You don't have any facts stored in your profile memory to delete."}
+        
+    llm_service = LLMService()
+    
+    # Format facts with IDs
+    facts_list = "\n".join(f"ID {f['id']}: {f['fact']}" for f in facts)
+    
+    system_instruction = (
+        "You are a memory manager assistant. Your job is to analyze the user's request to 'forget' "
+        "or 'delete' a fact about themselves, and match it against their current stored facts.\n\n"
+        "Facts List:\n"
+        f"{facts_list}\n\n"
+        "Determine if any fact matches the deletion request. Return the ID of the matching fact. "
+        "If no fact matches, return null for fact_id."
+    )
+    
+    selection = llm_service.generate_structured_groq(
+        prompt=f"User Forget Request: {query}",
+        schema=FactDeletionSelector,
+        system_instruction=system_instruction,
+        temperature=0.0
+    )
+    
+    if selection.fact_id is not None:
+        # Find the text of the deleted fact
+        deleted_text = next((f["fact"] for f in facts if f["id"] == selection.fact_id), "Unknown fact")
+        success = db.delete_fact(selection.fact_id)
+        if success:
+            return {"answer": f"🗑️ I've forgotten that: \"{deleted_text}\""}
+            
+    return {"answer": "I couldn't find a matching fact in my memory to forget. Could you be more specific?"}
