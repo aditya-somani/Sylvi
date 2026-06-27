@@ -120,6 +120,40 @@ async def ingestion_worker(queue: asyncio.Queue, application) -> None:
             queue.task_done()
 
 
+async def reminder_worker(application) -> None:
+    """
+    Background worker that polls the database for due reminders
+    and dispatches them to their corresponding chats.
+    """
+    logger.info("Background Reminder Worker started.")
+    # Instantiate DB here to ensure worker runs successfully on a separate connection
+    db = ProfileMemoryDB()
+    while True:
+        try:
+            due_reminders = db.get_pending_reminders()
+            for r in due_reminders:
+                rid = r["id"]
+                chat_id = r["chat_id"]
+                text = r["reminder_text"]
+                logger.info(f"Triggering due reminder {rid} for chat {chat_id}")
+                try:
+                    await application.bot.send_message(
+                        chat_id=chat_id,
+                        text=f"⏰ **Reminder**: {text}",
+                        parse_mode="Markdown"
+                    )
+                    db.mark_reminder_sent(rid)
+                    logger.info(f"Reminder {rid} sent and marked successfully.")
+                except Exception as send_err:
+                    logger.error(f"Failed to send reminder {rid} to chat {chat_id}: {str(send_err)}")
+                    # Mark as sent anyway to avoid infinite loop retrying invalid/blocked chats
+                    db.mark_reminder_sent(rid)
+        except Exception as e:
+            logger.exception("Error in reminder worker loop")
+        
+        await asyncio.sleep(10)
+
+
 # --- Life-cycle Hooks ---
 
 async def post_init(application) -> None:
@@ -134,6 +168,11 @@ async def post_init(application) -> None:
     application.bot_data["worker_task"] = asyncio.create_task(
         ingestion_worker(ingestion_queue, application)
     )
+    
+    # Start the reminder task
+    application.bot_data["reminder_task"] = asyncio.create_task(
+        reminder_worker(application)
+    )
 
 async def post_shutdown(application) -> None:
     """Triggered on bot shutdown. Safely cancels background worker tasks."""
@@ -144,6 +183,14 @@ async def post_shutdown(application) -> None:
             await worker_task
         except asyncio.CancelledError:
             logger.info("Background worker task successfully cancelled.")
+            
+    reminder_task = application.bot_data.get("reminder_task")
+    if reminder_task:
+        reminder_task.cancel()
+        try:
+            await reminder_task
+        except asyncio.CancelledError:
+            logger.info("Background reminder task successfully cancelled.")
 
 
 # --- Command Handlers ---

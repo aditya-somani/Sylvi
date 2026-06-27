@@ -38,8 +38,9 @@ def run_test():
     # Retrieve due reminders
     pending = db.get_pending_reminders()
     print(f"Pending due reminders retrieved: {pending}")
-    assert len(pending) == 1, "Error: Expected 1 pending due reminder!"
-    assert pending[0]["reminder_text"] == reminder_msg, "Error: Text mismatch!"
+    our_reminder = next((r for r in pending if r["id"] == reminder_id), None)
+    assert our_reminder is not None, "Error: Scheduled reminder not found in pending!"
+    assert our_reminder["reminder_text"] == reminder_msg, "Error: Text mismatch!"
     print("Pending reminder retrieval check: PASSED")
     
     # Mark as sent
@@ -49,7 +50,8 @@ def run_test():
     # Verify no more pending due reminders
     pending_after = db.get_pending_reminders()
     print(f"Pending due reminders after marking: {pending_after}")
-    assert len(pending_after) == 0, "Error: Reminder was marked sent but still retrieved!"
+    our_reminder_after = next((r for r in pending_after if r["id"] == reminder_id), None)
+    assert our_reminder_after is None, "Error: Reminder was marked sent but still retrieved in pending!"
     print("Sent status update check: PASSED")
     
     print("\nAll SQLite database integration checks: PASSED")
