@@ -102,15 +102,19 @@ def reminder_node(state: QueryState) -> Dict[str, Any]:
     if not time_str:
         return {"answer": "I understood you wanted a reminder, but I couldn't resolve the exact time. Could you specify it?"}
         
+    from datetime import timezone, timedelta
+    ist = timezone(timedelta(hours=5, minutes=30))
     try:
         trigger_time = datetime.fromisoformat(time_str)
+        if trigger_time.tzinfo is None:
+            trigger_time = trigger_time.replace(tzinfo=ist)
     except Exception:
-        trigger_time = datetime.utcnow()
+        trigger_time = datetime.now(ist)
         
     db = ProfileMemoryDB()
     db.add_reminder(chat_id, text, trigger_time)
     
-    formatted_time = trigger_time.strftime("%A, %b %d at %I:%M %p UTC")
+    formatted_time = trigger_time.strftime("%A, %b %d at %I:%M %p IST")
     return {
         "answer": f"⏰ Done! I've set a reminder to '{text}' for {formatted_time}."
     }

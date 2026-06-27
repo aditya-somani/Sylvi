@@ -1,5 +1,5 @@
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from src.memory.profile import ProfileMemoryDB
 
 def run_test():
@@ -31,7 +31,7 @@ def run_test():
     reminder_msg = "Buy milk"
     
     # Schedule a reminder trigger 1 second in the past (to simulate it being due)
-    due_time = datetime.utcnow() - timedelta(seconds=1)
+    due_time = datetime.now(timezone.utc) - timedelta(seconds=1)
     reminder_id = db.add_reminder(chat_id, reminder_msg, due_time)
     print(f"Scheduled past reminder ID {reminder_id}")
     

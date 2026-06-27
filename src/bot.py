@@ -480,10 +480,14 @@ async def text_and_link_handler(update: Update, context: ContextTypes.DEFAULT_TY
             query_text = f"[Context: Replying to message: \"{ref_text}\"]\n\nUser Query: {text}"
             
     try:
+        from datetime import timezone, timedelta
+        ist = timezone(timedelta(hours=5, minutes=30))
+        current_time_ist = datetime.now(ist).isoformat()
+        
         final_state = await query_graph.ainvoke({
             "query": query_text,
             "chat_id": chat_id,
-            "current_time": datetime.utcnow().isoformat(),
+            "current_time": current_time_ist,
             "chat_history": chat_history
         })
         

@@ -156,7 +156,8 @@ class ProfileMemoryDB:
         in the past relative to the current UTC timestamp.
         """
         # PostgreSQL handles native datetime objects directly
-        now = datetime.utcnow()
+        from datetime import timezone
+        now = datetime.now(timezone.utc)
         with self._get_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute(
