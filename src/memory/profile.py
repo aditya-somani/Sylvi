@@ -28,41 +28,45 @@ class ProfileMemoryDB:
 
     def _init_db(self) -> None:
         """Initializes database tables if they do not exist."""
-        with self._get_connection() as conn:
-            with conn.cursor() as cursor:
-                # Table 1: Personal profile facts
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS profile_facts (
-                        id SERIAL PRIMARY KEY,
-                        fact TEXT NOT NULL,
-                        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-                    )
-                """)
-                
-                # Table 2: Reminders
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS reminders (
-                        id SERIAL PRIMARY KEY,
-                        chat_id TEXT NOT NULL,
-                        reminder_text TEXT NOT NULL,
-                        trigger_time TIMESTAMP WITH TIME ZONE NOT NULL,
-                        status TEXT DEFAULT 'pending', -- 'pending' | 'sent'
-                        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-                    )
-                """)
+        conn = self._get_connection()
+        try:
+            with conn:
+                with conn.cursor() as cursor:
+                    # Table 1: Personal profile facts
+                    cursor.execute("""
+                        CREATE TABLE IF NOT EXISTS profile_facts (
+                            id SERIAL PRIMARY KEY,
+                            fact TEXT NOT NULL,
+                            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                        )
+                    """)
+                    
+                    # Table 2: Reminders
+                    cursor.execute("""
+                        CREATE TABLE IF NOT EXISTS reminders (
+                            id SERIAL PRIMARY KEY,
+                            chat_id TEXT NOT NULL,
+                            reminder_text TEXT NOT NULL,
+                            trigger_time TIMESTAMP WITH TIME ZONE NOT NULL,
+                            status TEXT DEFAULT 'pending', -- 'pending' | 'sent'
+                            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                        )
+                    """)
 
-                # Table 3: Chat history table
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS chat_history (
-                        id SERIAL PRIMARY KEY,
-                        chat_id TEXT NOT NULL,
-                        role TEXT NOT NULL,
-                        content TEXT NOT NULL,
-                        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-                    )
-                """)
-                conn.commit()
-                logger.info("PostgreSQL database tables verified/initialized successfully.")
+                    # Table 3: Chat history table
+                    cursor.execute("""
+                        CREATE TABLE IF NOT EXISTS chat_history (
+                            id SERIAL PRIMARY KEY,
+                            chat_id TEXT NOT NULL,
+                            role TEXT NOT NULL,
+                            content TEXT NOT NULL,
+                            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                        )
+                    """)
+                    conn.commit()
+                    logger.info("PostgreSQL database tables verified/initialized successfully.")
+        finally:
+            conn.close()
 
     # --- Profile Facts Operations ---
 
@@ -72,63 +76,79 @@ class ProfileMemoryDB:
         if len(content_clean) > 500:
             content_clean = content_clean[:500] + "... [truncated]"
 
-        with self._get_connection() as conn:
-            with conn.cursor() as cursor:
-                # 1. Insert the new message
-                cursor.execute(
-                    "INSERT INTO chat_history (chat_id, role, content) VALUES (%s, %s, %s)",
-                    (chat_id, role, content_clean)
-                )
-                # 2. Prune history to keep only the latest 30 messages per chat_id
-                cursor.execute(
-                    """
-                    DELETE FROM chat_history 
-                    WHERE chat_id = %s AND id NOT IN (
-                        SELECT id FROM chat_history 
-                        WHERE chat_id = %s 
-                        ORDER BY created_at DESC 
-                        LIMIT 30
+        conn = self._get_connection()
+        try:
+            with conn:
+                with conn.cursor() as cursor:
+                    # 1. Insert the new message
+                    cursor.execute(
+                        "INSERT INTO chat_history (chat_id, role, content) VALUES (%s, %s, %s)",
+                        (chat_id, role, content_clean)
                     )
-                    """,
-                    (chat_id, chat_id)
-                )
-                conn.commit()
-                logger.info(f"Added and pruned chat message for {chat_id} ({role})")
+                    # 2. Prune history to keep only the latest 30 messages per chat_id
+                    cursor.execute(
+                        """
+                        DELETE FROM chat_history 
+                        WHERE chat_id = %s AND id NOT IN (
+                            SELECT id FROM chat_history 
+                            WHERE chat_id = %s 
+                            ORDER BY created_at DESC 
+                            LIMIT 30
+                        )
+                        """,
+                        (chat_id, chat_id)
+                    )
+                    conn.commit()
+                    logger.info(f"Added and pruned chat message for {chat_id} ({role})")
+        finally:
+            conn.close()
 
     def add_fact(self, fact: str) -> int:
         """
         Saves a new profile fact.
         Returns the row ID of the inserted record.
         """
-        with self._get_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    "INSERT INTO profile_facts (fact) VALUES (%s) RETURNING id",
-                    (fact.strip(),)
-                )
-                last_id = cursor.fetchone()["id"]
-                conn.commit()
-                logger.info(f"Added new profile fact (ID: {last_id})")
-                return last_id
+        conn = self._get_connection()
+        try:
+            with conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        "INSERT INTO profile_facts (fact) VALUES (%s) RETURNING id",
+                        (fact.strip(),)
+                    )
+                    last_id = cursor.fetchone()["id"]
+                    conn.commit()
+                    logger.info(f"Added new profile fact (ID: {last_id})")
+                    return last_id
+        finally:
+            conn.close()
 
     def get_all_facts(self) -> List[Dict[str, Any]]:
         """
         Retrieves all stored facts alongside their primary key IDs.
         Used for context injection and conflict resolution.
         """
-        with self._get_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute("SELECT id, fact FROM profile_facts ORDER BY created_at DESC")
-                rows = cursor.fetchall()
-                return [{"id": row["id"], "fact": row["fact"]} for row in rows]
+        conn = self._get_connection()
+        try:
+            with conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT id, fact FROM profile_facts ORDER BY created_at DESC")
+                    rows = cursor.fetchall()
+                    return [{"id": row["id"], "fact": row["fact"]} for row in rows]
+        finally:
+            conn.close()
 
     def delete_fact(self, fact_id: int) -> bool:
         """Deletes a fact by ID."""
-        with self._get_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute("DELETE FROM profile_facts WHERE id = %s", (fact_id,))
-                conn.commit()
-                return cursor.rowcount > 0
+        conn = self._get_connection()
+        try:
+            with conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("DELETE FROM profile_facts WHERE id = %s", (fact_id,))
+                    conn.commit()
+                    return cursor.rowcount > 0
+        finally:
+            conn.close()
 
     # --- Reminders Operations ---
 
@@ -136,19 +156,23 @@ class ProfileMemoryDB:
         """
         Queues a new reminder.
         """
-        with self._get_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    """
-                    INSERT INTO reminders (chat_id, reminder_text, trigger_time, status)
-                    VALUES (%s, %s, %s, 'pending') RETURNING id
-                    """,
-                    (chat_id, reminder_text.strip(), trigger_time)
-                )
-                last_id = cursor.fetchone()["id"]
-                conn.commit()
-                logger.info(f"Scheduled reminder {last_id} for chat {chat_id} at {trigger_time}")
-                return last_id
+        conn = self._get_connection()
+        try:
+            with conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        INSERT INTO reminders (chat_id, reminder_text, trigger_time, status)
+                        VALUES (%s, %s, %s, 'pending') RETURNING id
+                        """,
+                        (chat_id, reminder_text.strip(), trigger_time)
+                    )
+                    last_id = cursor.fetchone()["id"]
+                    conn.commit()
+                    logger.info(f"Scheduled reminder {last_id} for chat {chat_id} at {trigger_time}")
+                    return last_id
+        finally:
+            conn.close()
 
     def get_pending_reminders(self) -> List[Dict[str, Any]]:
         """
@@ -158,51 +182,63 @@ class ProfileMemoryDB:
         # PostgreSQL handles native datetime objects directly
         from datetime import timezone
         now = datetime.now(timezone.utc)
-        with self._get_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    """
-                    SELECT id, chat_id, reminder_text, trigger_time 
-                    FROM reminders 
-                    WHERE status = 'pending' AND trigger_time <= %s
-                    """,
-                    (now,)
-                )
-                rows = cursor.fetchall()
-                # Convert trigger_time timestamp to string matching previous SQLite string-based output for API compatibility
-                results = []
-                for row in rows:
-                    results.append({
-                        "id": row["id"],
-                        "chat_id": row["chat_id"],
-                        "reminder_text": row["reminder_text"],
-                        "trigger_time": row["trigger_time"].isoformat() if isinstance(row["trigger_time"], datetime) else str(row["trigger_time"])
-                    })
-                return results
+        conn = self._get_connection()
+        try:
+            with conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT id, chat_id, reminder_text, trigger_time 
+                        FROM reminders 
+                        WHERE status = 'pending' AND trigger_time <= %s
+                        """,
+                        (now,)
+                    )
+                    rows = cursor.fetchall()
+                    # Convert trigger_time timestamp to string matching previous SQLite string-based output for API compatibility
+                    results = []
+                    for row in rows:
+                        results.append({
+                            "id": row["id"],
+                            "chat_id": row["chat_id"],
+                            "reminder_text": row["reminder_text"],
+                            "trigger_time": row["trigger_time"].isoformat() if isinstance(row["trigger_time"], datetime) else str(row["trigger_time"])
+                        })
+                    return results
+        finally:
+            conn.close()
 
     def mark_reminder_sent(self, reminder_id: int) -> bool:
         """Marks a reminder as sent to prevent re-sending."""
-        with self._get_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    "UPDATE reminders SET status = 'sent' WHERE id = %s",
-                    (reminder_id,)
-                )
-                conn.commit()
-                return cursor.rowcount > 0
+        conn = self._get_connection()
+        try:
+            with conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        "UPDATE reminders SET status = 'sent' WHERE id = %s",
+                        (reminder_id,)
+                    )
+                    conn.commit()
+                    return cursor.rowcount > 0
+        finally:
+            conn.close()
 
     def get_chat_history(self, chat_id: str, limit: int = 15) -> List[Dict[str, str]]:
         """Retrieves the latest chat history for a given chat_id."""
-        with self._get_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    """
-                    SELECT role, content FROM chat_history 
-                    WHERE chat_id = %s 
-                    ORDER BY created_at ASC 
-                    LIMIT %s
-                    """,
-                    (chat_id, limit)
-                )
-                rows = cursor.fetchall()
-                return [{"role": row["role"], "content": row["content"]} for row in rows]
+        conn = self._get_connection()
+        try:
+            with conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT role, content FROM chat_history 
+                        WHERE chat_id = %s 
+                        ORDER BY created_at ASC 
+                        LIMIT %s
+                        """,
+                        (chat_id, limit)
+                    )
+                    rows = cursor.fetchall()
+                    return [{"role": row["role"], "content": row["content"]} for row in rows]
+        finally:
+            conn.close()
