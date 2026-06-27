@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     GROQ_TEXT_MODEL: str = "llama-3.3-70b-versatile"
     GROQ_VISION_MODEL: str = "meta-llama/llama-4-scout-17b-16e-instruct"
     GROQ_WHISPER_MODEL: str = "whisper-large-v3-turbo"
-    GEMINI_EMBEDDING_MODEL: str = "text-embedding-004"
+    GEMINI_EMBEDDING_MODEL: str = "models/gemini-embedding-001"
 
     # Vector DB
     PINECONE_API_KEY: str

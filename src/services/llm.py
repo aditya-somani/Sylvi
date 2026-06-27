@@ -73,7 +73,8 @@ class LLMService:
         client: genai.Client = self._get_gemini_client()
         response: Any = client.models.embed_content(
             model=settings.GEMINI_EMBEDDING_MODEL,
-            contents=text
+            contents=text,
+            config=types.EmbedContentConfig(output_dimensionality=768)
         )
         
         embeddings = getattr(response, "embeddings", None)
