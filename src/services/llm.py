@@ -2,6 +2,7 @@ import os
 import base64
 import itertools
 from typing import List, Optional, Iterator, Any, Type
+from groq import Groq
 from google import genai
 from google.genai import types
 from langchain_groq import ChatGroq
@@ -152,3 +153,29 @@ class LLMService:
         
         response = chat.invoke([message])
         return str(response.content)
+
+    def transcribe_voice(self, audio_path: str) -> str:
+        """
+        Transcribes a local audio file using Groq Whisper.
+        Uses the groq SDK directly since langchain-groq does not expose
+        the audio transcription endpoint.
+        """
+        if not os.path.exists(audio_path):
+            raise FileNotFoundError(f"Audio file not found: {audio_path}")
+
+        api_key: str = self.groq_keys.get_next_key()
+        client = Groq(api_key=api_key)
+
+        with open(audio_path, "rb") as audio_file:
+            transcription = client.audio.transcriptions.create(
+                model=settings.GROQ_WHISPER_MODEL,
+                file=audio_file,
+                response_format="text",
+            )
+
+        # When response_format="text", the SDK returns the transcript string directly
+        transcript = str(transcription).strip()
+        if not transcript:
+            raise RuntimeError(f"Whisper returned an empty transcript for: {audio_path}")
+
+        return transcript
