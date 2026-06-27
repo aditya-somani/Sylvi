@@ -14,8 +14,9 @@ class Settings(BaseSettings):
     GROQ_API_KEYS: str
 
     # Model Configurations
-    GROQ_TEXT_MODEL: str = "llama3-70b-8192"
-    GROQ_VISION_MODEL: str = "llama-3.2-11b-vision-preview"
+    GROQ_TEXT_MODEL: str = "llama-3.3-70b-versatile"
+    GROQ_VISION_MODEL: str = "meta-llama/llama-4-scout-17b-16e-instruct"
+    GROQ_WHISPER_MODEL: str = "whisper-large-v3-turbo"
     GEMINI_EMBEDDING_MODEL: str = "text-embedding-004"
 
     # Vector DB
