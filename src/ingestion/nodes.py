@@ -10,6 +10,7 @@ from src.ingestion.state import IngestionState
 from src.services.llm import LLMService
 from src.services.vector_db import VectorDBService
 from src.services.scrapers import WebScraperService
+from src.prompts import URL_INGESTION_SYSTEM_PROMPT
 
 # Official langchain splitter
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -40,13 +41,7 @@ async def url_processor_node(state: IngestionState) -> Dict[str, Any]:
     scraped_content = await scraper_service.scrape_url(url)
     
     # 2. De-noise & Summarize using Gemini 1.5 Flash
-    system_instruction = (
-        "You are an expert content ingest engineer. Clean and structure the provided text "
-        "into a dense, highly informative Markdown document. Extract all key facts, technical "
-        "specifications, terms, names, dates, and core context. Ignore advertisements, "
-        "navigation boilerplate, cookies, and irrelevant sidebar text. Do not add conversational fluff; "
-        "output only the structured markdown."
-    )
+    system_instruction = URL_INGESTION_SYSTEM_PROMPT
     prompt = f"Scraped Page Content:\n\n{scraped_content}"
     
     clean_markdown = llm_service.generate_groq(
@@ -59,6 +54,10 @@ async def url_processor_node(state: IngestionState) -> Dict[str, Any]:
     metadata = state.get("metadata")
     updated_metadata = dict(metadata) if metadata else {}
     updated_metadata["source_url"] = url
+    
+    user_annotation = updated_metadata.get("user_annotation", "").strip()
+    if user_annotation:
+        clean_markdown += f"\n\n[User Annotation/Context]\n{user_annotation}"
     
     return {
         "processed_text": clean_markdown,
@@ -83,12 +82,18 @@ def image_processor_node(state: IngestionState) -> Dict[str, Any]:
     """Generates a detailed description of an image using Gemini Flash Vision."""
     logger.info("Running image_processor_node...")
     image_path = state["raw_content"]
+    metadata = state.get("metadata") or {}
+    caption = metadata.get("caption", "").strip()
     
     llm_service = LLMService()
     description = llm_service.describe_image(image_path)
     
+    processed_text = f"[Image Description]\n{description}"
+    if caption:
+        processed_text += f"\n\n[User Caption/Context]\n{caption}"
+        
     return {
-        "processed_text": f"[Image Description]\n{description}"
+        "processed_text": processed_text
     }
 
 

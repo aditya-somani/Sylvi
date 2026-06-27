@@ -10,6 +10,14 @@ from src.query.state import QueryState
 from src.services.llm import LLMService
 from src.services.vector_db import VectorDBService
 from src.memory.profile import ProfileMemoryDB
+from src.prompts import (
+    INTENT_ROUTER_SYSTEM_PROMPT,
+    CHITCHAT_SYSTEM_PROMPT,
+    REMINDER_SYSTEM_PROMPT,
+    QUERY_OPTIMIZER_SYSTEM_PROMPT,
+    RAG_GENERATION_SYSTEM_PROMPT,
+    FACT_DELETION_SYSTEM_PROMPT
+)
 
 logger = logging.getLogger(__name__)
 
@@ -37,15 +45,7 @@ def intent_router_node(state: QueryState) -> Dict[str, Any]:
     query = state["query"]
     llm_service = LLMService()
     
-    system_instruction = (
-        "You are the intent router for Sylvi, a stateful personal memory copilot.\n"
-        "Your task is to classify the user's query into one of these intents:\n"
-        "1. 'chit_chat': Simple greetings ('hi', 'hello', 'hey'), thank yous, bye, or basic polite banter.\n"
-        "2. 'reminder': The user wants to schedule a reminder (e.g., 'remind me to...', 'set a reminder').\n"
-        "3. 'profile_query': The user is asking about details they expect you to know about them personally, "
-        "their preferences, or settings (e.g., 'What is my favorite language?', 'What do you know about me?').\n"
-        "4. 'retrieval': The user is searching their saved documents, web links, or transcripts (e.g., 'What did I save about LangGraph?')."
-    )
+    system_instruction = INTENT_ROUTER_SYSTEM_PROMPT
     
     classification = llm_service.generate_structured_groq(
         prompt=f"User Message: {query}",
@@ -66,7 +66,7 @@ def chitchat_node(state: QueryState) -> Dict[str, Any]:
     
     answer = llm_service.generate_groq(
         prompt=query,
-        system_instruction="You are Sylvi, a friendly personal memory copilot. Give a brief, pleasant response.",
+        system_instruction=CHITCHAT_SYSTEM_PROMPT,
         temperature=0.7
     )
     return {"answer": answer}
@@ -80,14 +80,7 @@ def reminder_node(state: QueryState) -> Dict[str, Any]:
     
     llm_service = LLMService()
     
-    system_instruction = (
-        "You are an expert information extraction assistant.\n"
-        f"Internal Clock Context (Current UTC/Local Time): {current_time}\n\n"
-        "Extract the task description to be reminded of and resolve the trigger time to absolute YYYY-MM-DDTHH:MM:SS format.\n"
-        "Make sure to correctly resolve relative offsets (like 'in 5 minutes' or 'tomorrow morning') by adding to the current time.\n"
-        "- If user says 'in the afternoon', schedule for 14:00:00 of the corresponding day.\n"
-        "- If user says 'tomorrow morning', schedule for 09:00:00 next day.\n"
-    )
+    system_instruction = REMINDER_SYSTEM_PROMPT.format(current_time=current_time)
     
     extracted = llm_service.generate_structured_groq(
         prompt=f"User Query: {query}",
@@ -144,10 +137,7 @@ def retrieval_node(state: QueryState) -> Dict[str, Any]:
     facts = db.get_all_facts()
     
     # 2. Optimize query for semantic search
-    system_instruction = (
-        "You are a search query optimizer. Given a user query, extract the core entities, keywords, "
-        "and technical terms to create a search query optimized for vector database retrieval."
-    )
+    system_instruction = QUERY_OPTIMIZER_SYSTEM_PROMPT
     
     optimized = llm_service.generate_structured_groq(
         prompt=f"Raw Query: {query}",
@@ -196,16 +186,7 @@ def generation_node(state: QueryState) -> Dict[str, Any]:
             formatted_matches.append(f"{ref}\nContent:\n{text}\n")
         context_section = "\n---\n".join(formatted_matches)
         
-    system_instruction = (
-        "You are Sylvi, an intelligent, personal memory copilot. Your objective is to answer "
-        "the user's query utilizing their structured profile facts and saved vector documents context.\n\n"
-        "Rules:\n"
-        "1. Give direct, helpful answers.\n"
-        "2. If you base your answer on a saved document, cite the source index (e.g. [1]) and "
-        "mention the source type (e.g., 'According to the article you saved...').\n"
-        "3. If the context does not contain the answer, explain politely that you do not "
-        "remember or have not saved that information."
-    )
+    system_instruction = RAG_GENERATION_SYSTEM_PROMPT
     
     prompt = (
         f"USER PROFILE FACTS:\n"
@@ -245,14 +226,7 @@ def delete_fact_node(state: QueryState) -> Dict[str, Any]:
     # Format facts with IDs
     facts_list = "\n".join(f"ID {f['id']}: {f['fact']}" for f in facts)
     
-    system_instruction = (
-        "You are a memory manager assistant. Your job is to analyze the user's request to 'forget' "
-        "or 'delete' a fact about themselves, and match it against their current stored facts.\n\n"
-        "Facts List:\n"
-        f"{facts_list}\n\n"
-        "Determine if any fact matches the deletion request. Return the ID of the matching fact. "
-        "If no fact matches, return null for fact_id."
-    )
+    system_instruction = FACT_DELETION_SYSTEM_PROMPT.format(facts_list=facts_list)
     
     selection = llm_service.generate_structured_groq(
         prompt=f"User Forget Request: {query}",

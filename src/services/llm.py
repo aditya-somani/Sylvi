@@ -9,6 +9,7 @@ from langchain_groq import ChatGroq
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel
 from src.config import settings
+from src.prompts import IMAGE_DESCRIPTION_PROMPT
 
 class APIKeyRotator:
     """
@@ -134,12 +135,7 @@ class LLMService:
         with open(file_path, "rb") as image_file:
             encoded_image = base64.b64encode(image_file.read()).decode("utf-8")
         
-        prompt = (
-            "Analyze this image in detail. Generate a rich, descriptive, and comprehensive summary "
-            "of what is shown. Include any text visible in the image (OCR), describe the objects, "
-            "actions, style, colors, and key context. This summary will be used in a search engine "
-            "to retrieve this image, so make it highly detailed and use descriptive keywords."
-        )
+        prompt = IMAGE_DESCRIPTION_PROMPT
         
         chat = self._get_groq_chat(model=settings.GROQ_VISION_MODEL, temperature=0.2)
         message = HumanMessage(

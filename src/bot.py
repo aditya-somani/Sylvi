@@ -17,6 +17,7 @@ from telegram.ext import (
 
 from src.config import settings
 from src.memory.profile import ProfileMemoryDB
+from src.prompts import INGESTION_CONFIRM_SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -59,8 +60,27 @@ async def ingestion_worker(queue: asyncio.Queue, application) -> None:
                 except Exception as cleanup_err:
                     logger.warning(f"Failed to delete temp file {raw_content}: {str(cleanup_err)}")
             
-            # Update the "Processing..." message in-place for a clean, non-spam success feedback
-            success_text = "✅ **Ingested successfully!** I have indexed this content in your memory."
+            # Generate friendly personalized confirmation response using LLM
+            success_text = "✅ Ingested successfully. I've indexed this content in your memory."
+            try:
+                processed_text = final_state.get("processed_text", "")
+                if processed_text:
+                    from src.services.llm import LLMService
+                    llm_service = LLMService()
+                    confirm_prompt = f"Input Type: {input_type}\nIngested Content:\n{processed_text}"
+                    response = llm_service.generate_groq(
+                        prompt=confirm_prompt,
+                        system_instruction=INGESTION_CONFIRM_SYSTEM_PROMPT,
+                        temperature=0.5
+                    )
+                    cleaned_resp = str(response).strip()
+                    if cleaned_resp:
+                        # Ensure we strip surrounding quotes if LLM added them
+                        if (cleaned_resp.startswith('"') and cleaned_resp.endswith('"')) or (cleaned_resp.startswith("'") and cleaned_resp.endswith("'")):
+                            cleaned_resp = cleaned_resp[1:-1].strip()
+                        success_text = cleaned_resp
+            except Exception as confirm_err:
+                logger.warning(f"Failed to generate dynamic confirmation response: {str(confirm_err)}")
             if processing_msg_id:
                 try:
                     await application.bot.edit_message_text(
