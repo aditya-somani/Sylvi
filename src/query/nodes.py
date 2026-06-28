@@ -23,6 +23,25 @@ from src.prompts import (
 logger = logging.getLogger(__name__)
 
 
+def _format_chat_history(chat_history: List[Dict[str, Any]], max_messages: int = 8, max_chars_per_msg: int = 200) -> str:
+    """
+    Formats recent chat history into a compact string for LLM context injection.
+    Truncates individual messages and limits total message count for efficiency.
+    """
+    if not chat_history:
+        return ""
+    # Take only the most recent N messages
+    recent = chat_history[-max_messages:]
+    lines = []
+    for msg in recent:
+        role_name = "User" if msg["role"] == "user" else "Sylvi"
+        content = msg.get("content", "")
+        if len(content) > max_chars_per_msg:
+            content = content[:max_chars_per_msg] + "..."
+        lines.append(f"{role_name}: {content}")
+    return "\n".join(lines)
+
+
 # --- Pydantic Schemas for Structured Outputs ---
 
 class IntentClassification(BaseModel):
@@ -53,14 +72,8 @@ def intent_router_node(state: QueryState) -> Dict[str, Any]:
     llm_service = LLMService()
     system_instruction = INTENT_ROUTER_SYSTEM_PROMPT
     
-    # Format chat history context for the LLM
-    history_str = ""
-    if chat_history:
-        history_list = []
-        for msg in chat_history:
-            role_name = "User" if msg["role"] == "user" else "Sylvi"
-            history_list.append(f"{role_name}: {msg['content']}")
-        history_str = "\n".join(history_list)
+    # Use compact history (last 12 msgs, 150 chars each) to keep routing fast
+    history_str = _format_chat_history(chat_history, max_messages=12, max_chars_per_msg=150)
         
     if history_str:
         prompt = f"Recent Chat History:\n{history_str}\n\nUser Message: {query}"
@@ -102,14 +115,8 @@ def reminder_node(state: QueryState) -> Dict[str, Any]:
     llm_service = LLMService()
     system_instruction = REMINDER_SYSTEM_PROMPT.format(current_time=current_time)
     
-    # Format chat history context for the LLM
-    history_str = ""
-    if chat_history:
-        history_list = []
-        for msg in chat_history:
-            role_name = "User" if msg["role"] == "user" else "Sylvi"
-            history_list.append(f"{role_name}: {msg['content']}")
-        history_str = "\n".join(history_list)
+    # Use last 16 messages for reminder context resolution
+    history_str = _format_chat_history(chat_history, max_messages=16, max_chars_per_msg=200)
         
     if history_str:
         prompt = f"Recent Chat History:\n{history_str}\n\nUser Query: {query}"
@@ -189,12 +196,14 @@ def retrieval_node(state: QueryState) -> Dict[str, Any]:
 
 async def web_search_node(state: QueryState) -> Dict[str, Any]:
     """
-    Decides if the query needs real-time web search based on loaded SQLite/Pinecone facts.
+    Decides if the query needs real-time web search based on loaded SQLite/Pinecone facts
+    and recent chat history context.
     If yes, updates Telegram status and runs a DuckDuckGo search.
     """
     query = state["query"]
     profile_facts = state.get("profile_facts") or []
     pinecone_context = state.get("pinecone_context") or []
+    chat_history = state.get("chat_history") or []
     status_callback = state.get("status_callback")
     
     # Format current facts for the search decision
@@ -208,15 +217,22 @@ async def web_search_node(state: QueryState) -> Dict[str, Any]:
             text = meta.get("text", "")
             facts_list.append(f"- Memory Document: {text}")
         facts_str = "\n".join(facts_list)
+    
+    # Include recent chat history so the search decider can resolve context
+    # (e.g. user says "Weather" after saying "I am based in Jawad MP India")
+    history_str = _format_chat_history(chat_history, max_messages=12, max_chars_per_msg=150)
         
     llm_service = LLMService()
     
+    # Build prompt with all available context
+    prompt_parts = [f"USER MEMORIES & FACTS:\n{facts_str}"]
+    if history_str:
+        prompt_parts.append(f"RECENT CONVERSATION:\n{history_str}")
+    prompt_parts.append(f"USER QUERY: {query}")
+    
     # Call decider
     decision = llm_service.generate_structured_groq(
-        prompt=(
-            f"USER MEMORIES & FACTS:\n{facts_str}\n\n"
-            f"USER QUERY: {query}"
-        ),
+        prompt="\n\n".join(prompt_parts),
         schema=SearchDecider,
         system_instruction=SEARCH_DECIDER_SYSTEM_PROMPT,
         temperature=0.0
@@ -253,6 +269,7 @@ def generation_node(state: QueryState) -> Dict[str, Any]:
     pinecone_context = state.get("pinecone_context") or []
     active_reminders = state.get("active_reminders") or []
     web_search_context = state.get("web_search_context") or []
+    chat_history = state.get("chat_history") or []
     
     # Format SQLite Profile section
     profile_section = "No stored profile facts found about the user."
@@ -295,6 +312,12 @@ def generation_node(state: QueryState) -> Dict[str, Any]:
                 ref += f" URL: {url}"
             formatted_matches.append(f"{ref}\nContent:\n{text}\n")
         context_section = "\n---\n".join(formatted_matches)
+    
+    # Format recent conversation context (last 20 messages for generation)
+    history_section = "No recent conversation history."
+    history_str = _format_chat_history(chat_history, max_messages=20, max_chars_per_msg=250)
+    if history_str:
+        history_section = history_str
         
     system_instruction = RAG_GENERATION_SYSTEM_PROMPT
     
@@ -303,6 +326,8 @@ def generation_node(state: QueryState) -> Dict[str, Any]:
         f"{profile_section}\n\n"
         f"ACTIVE PENDING REMINDERS:\n"
         f"{reminders_section}\n\n"
+        f"RECENT CONVERSATION HISTORY:\n"
+        f"{history_section}\n\n"
         f"WEB SEARCH RESULTS CONTEXT:\n"
         f"{search_section}\n\n"
         f"SAVED VECTOR DOCUMENTS CONTEXT:\n"
