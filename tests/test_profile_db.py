@@ -8,12 +8,13 @@ def run_test():
     
     # 1. Test Profile Facts
     print("\n--- Testing Profile Facts ---")
+    chat_id = "test_chat_123"
     fact_text = "User prefers Python over Go."
-    fact_id = db.add_fact(fact_text)
+    fact_id = db.add_fact(chat_id, fact_text)
     print(f"Added Fact ID {fact_id}: '{fact_text}'")
     
     # Test consolidated facts retrieval (includes IDs)
-    facts = db.get_all_facts()
+    facts = db.get_all_facts(chat_id)
     print(f"Retrieved Facts from DB: {facts}")
     assert len(facts) == 1, "Error: Expected exactly 1 fact!"
     assert facts[0]["id"] == fact_id, "Error: Fact ID mismatch!"

@@ -166,7 +166,8 @@ def upsert_node(state: IngestionState) -> Dict[str, Any]:
             "timestamp": timestamp_str,
             "source": base_metadata.get("source", "telegram"),
             "message_id": base_metadata.get("message_id", ""),
-            "source_url": base_metadata.get("source_url", "")
+            "source_url": base_metadata.get("source_url", ""),
+            "chat_id": base_metadata.get("chat_id", "")
         }
         
         pinecone_vectors.append({

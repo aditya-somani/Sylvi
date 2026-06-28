@@ -130,7 +130,7 @@ def retrieval_node(state: QueryState) -> Dict[str, Any]:
     db = ProfileMemoryDB()
     
     # 1. Load SQLite facts
-    facts = db.get_all_facts()
+    facts = db.get_all_facts(state["chat_id"])
     reminders = db.get_reminders_by_chat(state["chat_id"])
     
     # 2. Optimize query for semantic search
@@ -145,7 +145,11 @@ def retrieval_node(state: QueryState) -> Dict[str, Any]:
     
     # 3. Embed optimized query & search Pinecone
     query_vector = llm_service.embed_text(optimized.search_query)
-    matches = vector_db.query_vectors(query_vector=query_vector, top_k=5)
+    matches = vector_db.query_vectors(
+        query_vector=query_vector,
+        top_k=5,
+        metadata_filter={"chat_id": state["chat_id"]}
+    )
     
     return {
         "profile_facts": facts,
@@ -294,10 +298,10 @@ class FactDeletionSelector(BaseModel):
 
 
 def delete_fact_node(state: QueryState) -> Dict[str, Any]:
-    """Resolves which fact the user wants to delete and removes it from SQLite."""
+    # Resolves which fact the user wants to delete and removes it from SQLite.
     query = state["query"]
     db = ProfileMemoryDB()
-    facts = db.get_all_facts()
+    facts = db.get_all_facts(state["chat_id"])
     
     if not facts:
         return {"answer": "You don't have any facts stored in your profile memory to delete."}

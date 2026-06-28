@@ -328,7 +328,8 @@ async def voice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "processing_msg_id": processing_msg.message_id,
         "metadata": {
             "source": "telegram",
-            "message_id": str(update.message.message_id)
+            "message_id": str(update.message.message_id),
+            "chat_id": str(update.effective_chat.id)
         }
     })
 
@@ -364,6 +365,7 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "metadata": {
             "source": "telegram",
             "message_id": str(update.message.message_id),
+            "chat_id": str(update.effective_chat.id),
             "caption": caption
         }
     })
@@ -475,7 +477,8 @@ async def text_and_link_handler(update: Update, context: ContextTypes.DEFAULT_TY
                     "source": "telegram",
                     "message_id": str(update.message.message_id),
                     "source_url": url,
-                    "user_annotation": user_annot
+                    "user_annotation": user_annot,
+                    "chat_id": str(update.effective_chat.id)
                 }
             })
         return

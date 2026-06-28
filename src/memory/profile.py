@@ -36,10 +36,13 @@ class ProfileMemoryDB:
                     cursor.execute("""
                         CREATE TABLE IF NOT EXISTS profile_facts (
                             id SERIAL PRIMARY KEY,
+                            chat_id TEXT DEFAULT 'system',
                             fact TEXT NOT NULL,
                             created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
                         )
                     """)
+                    # Ensure chat_id column exists for backward compatibility with existing databases
+                    cursor.execute("ALTER TABLE profile_facts ADD COLUMN IF NOT EXISTS chat_id TEXT DEFAULT 'system'")
                     
                     # Table 2: Reminders
                     cursor.execute("""
@@ -103,7 +106,7 @@ class ProfileMemoryDB:
         finally:
             conn.close()
 
-    def add_fact(self, fact: str) -> int:
+    def add_fact(self, chat_id: str, fact: str) -> int:
         """
         Saves a new profile fact.
         Returns the row ID of the inserted record.
@@ -113,17 +116,17 @@ class ProfileMemoryDB:
             with conn:
                 with conn.cursor() as cursor:
                     cursor.execute(
-                        "INSERT INTO profile_facts (fact) VALUES (%s) RETURNING id",
-                        (fact.strip(),)
+                        "INSERT INTO profile_facts (chat_id, fact) VALUES (%s, %s) RETURNING id",
+                        (chat_id, fact.strip())
                     )
                     last_id = cursor.fetchone()["id"]
                     conn.commit()
-                    logger.info(f"Added new profile fact (ID: {last_id})")
+                    logger.info(f"Added new profile fact (ID: {last_id}) for chat {chat_id}")
                     return last_id
         finally:
             conn.close()
 
-    def get_all_facts(self) -> List[Dict[str, Any]]:
+    def get_all_facts(self, chat_id: str) -> List[Dict[str, Any]]:
         """
         Retrieves all stored facts alongside their primary key IDs.
         Used for context injection and conflict resolution.
@@ -132,7 +135,10 @@ class ProfileMemoryDB:
         try:
             with conn:
                 with conn.cursor() as cursor:
-                    cursor.execute("SELECT id, fact FROM profile_facts ORDER BY created_at DESC")
+                    cursor.execute(
+                        "SELECT id, fact FROM profile_facts WHERE chat_id = %s ORDER BY created_at DESC",
+                        (chat_id,)
+                    )
                     rows = cursor.fetchall()
                     return [{"id": row["id"], "fact": row["fact"]} for row in rows]
         finally:
