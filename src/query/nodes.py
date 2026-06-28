@@ -106,7 +106,7 @@ def chitchat_node(state: QueryState) -> Dict[str, Any]:
 
 
 def reminder_node(state: QueryState) -> Dict[str, Any]:
-    """Extracts reminder details using ChatGroq structured outputs and saves into SQLite."""
+    """Extracts reminder details using ChatGroq structured outputs and saves into PostgreSQL."""
     chat_id = state["chat_id"]
     query = state["query"]
     current_time = state["current_time"]
@@ -156,7 +156,7 @@ def reminder_node(state: QueryState) -> Dict[str, Any]:
 
 def retrieval_node(state: QueryState) -> Dict[str, Any]:
     """
-    Loads both profile facts from SQLite AND matching chunks from Pinecone.
+    Loads both profile facts from PostgreSQL AND matching chunks from Pinecone.
     Uses ChatGroq to optimize the query into search keywords before querying Pinecone.
     """
     query = state["query"]
@@ -166,7 +166,7 @@ def retrieval_node(state: QueryState) -> Dict[str, Any]:
     vector_db = VectorDBService()
     db = ProfileMemoryDB()
     
-    # 1. Load SQLite facts
+    # 1. Load PostgreSQL facts
     facts = db.get_all_facts(state["chat_id"])
     reminders = db.get_reminders_by_chat(state["chat_id"])
     
@@ -204,7 +204,7 @@ def retrieval_node(state: QueryState) -> Dict[str, Any]:
 
 async def web_search_node(state: QueryState) -> Dict[str, Any]:
     """
-    Decides if the query needs real-time web search based on loaded SQLite/Pinecone facts
+    Decides if the query needs real-time web search based on loaded PostgreSQL/Pinecone facts
     and recent chat history context.
     If yes, updates Telegram status and runs a DuckDuckGo search.
     """
@@ -279,7 +279,7 @@ def generation_node(state: QueryState) -> Dict[str, Any]:
     web_search_context = state.get("web_search_context") or []
     chat_history = state.get("chat_history") or []
     
-    # Format SQLite Profile section
+    # Format PostgreSQL Profile section
     profile_section = "No stored profile facts found about the user."
     if profile_facts:
         profile_section = "\n".join(f"- {fact['fact']}" for fact in profile_facts)
@@ -360,7 +360,7 @@ class FactDeletionSelector(BaseModel):
 
 
 def delete_fact_node(state: QueryState) -> Dict[str, Any]:
-    # Resolves which fact the user wants to delete and removes it from SQLite.
+    # Resolves which fact the user wants to delete and removes it from PostgreSQL.
     query = state["query"]
     db = ProfileMemoryDB()
     facts = db.get_all_facts(state["chat_id"])

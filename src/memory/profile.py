@@ -23,7 +23,7 @@ class ProfileMemoryDB:
 
     def _get_connection(self) -> psycopg.Connection:
         """Returns a connection to the PostgreSQL database."""
-        # Using dict_row to match the old sqlite3.Row dict-like access patterns
+        # Using dict_row to match the old sqlite3.Row dict-like access patterns for compatibility
         return psycopg.connect(self.db_url, row_factory=dict_row)
 
     def _init_db(self) -> None:
@@ -201,7 +201,7 @@ class ProfileMemoryDB:
                         (now,)
                     )
                     rows = cursor.fetchall()
-                    # Convert trigger_time timestamp to string matching previous SQLite string-based output for API compatibility
+                    # Convert trigger_time timestamp to string matching previous PostgreSQL/SQLite string-based output for API compatibility
                     results = []
                     for row in rows:
                         results.append({

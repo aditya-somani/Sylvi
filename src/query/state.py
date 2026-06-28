@@ -23,7 +23,7 @@ class QueryState(TypedDict):
     intent: Optional[str]
 
     # --- Retrieved Contexts ---
-    # User facts loaded from SQLite, containing 'id' and 'fact' keys
+    # User facts loaded from PostgreSQL, containing 'id' and 'fact' keys
     profile_facts: Optional[List[Dict[str, Any]]]
     
     # Match chunks from Pinecone

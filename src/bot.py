@@ -296,7 +296,7 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "• Send **images/photos** — I'll analyze and caption what I see.\n"
         "• Type raw text — If it has links, I'll ingest them; otherwise, I'll reply using what I know!\n\n"
         "⚙️ **Available Commands:**\n"
-        "• `/facts` — View all your SQLite-stored profile facts.\n"
+        "• `/facts` — View all your PostgreSQL-stored profile facts.\n"
         "• `/help` — Show this guide again."
     )
     await update.message.reply_text(welcome_text, parse_mode="Markdown")
@@ -477,7 +477,7 @@ async def run_conversational_query(
         
         answer = final_state.get("answer") or "Sorry, I couldn't formulate a response."
         
-        # Add user query and assistant response to SQLite chat history
+        # Add user query and assistant response to PostgreSQL chat history
         log_text = original_msg_text if original_msg_text else query_text
         db.add_chat_message(chat_id, "user", log_text)
         db.add_chat_message(chat_id, "assistant", answer)
