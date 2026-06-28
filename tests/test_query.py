@@ -47,6 +47,12 @@ async def run_all_tests():
         query="Search my notes for anything about LangGraph optimization.",
         description="Full Vector RAG Search (Expected: Pinecone lookup, will trigger auth check)"
     )
+    
+    # Scenario 5: Web Search (should trigger DuckDuckGo search)
+    await run_scenario(
+        query="What is the weather today in Tokyo?",
+        description="Web Search (Expected: Scrape weather from DuckDuckGo)"
+    )
 
 if __name__ == "__main__":
     asyncio.run(run_all_tests())

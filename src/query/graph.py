@@ -9,6 +9,7 @@ from src.query.nodes import (
     chitchat_node,
     reminder_node,
     retrieval_node,
+    web_search_node,
     generation_node,
     delete_fact_node
 )
@@ -34,6 +35,7 @@ builder.add_node("intent_router", intent_router_node)
 builder.add_node("chitchat", chitchat_node)
 builder.add_node("reminder", reminder_node)
 builder.add_node("retrieval", retrieval_node)
+builder.add_node("web_search", web_search_node)
 builder.add_node("generation", generation_node)
 builder.add_node("delete_fact", delete_fact_node)
 
@@ -57,8 +59,9 @@ builder.add_edge("chitchat", END)
 builder.add_edge("reminder", END)
 builder.add_edge("delete_fact", END)
 
-# Converted routes flow to the generation node
-builder.add_edge("retrieval", "generation")
+# Converted routes flow sequentially to web search and then generation
+builder.add_edge("retrieval", "web_search")
+builder.add_edge("web_search", "generation")
 builder.add_edge("generation", END)
 
 # Compile the final graph

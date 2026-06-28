@@ -28,6 +28,12 @@ class QueryState(TypedDict):
     
     # Active reminders loaded from SQL for this user
     active_reminders: Optional[List[Dict[str, Any]]]
+    
+    # Web search results retrieved from DuckDuckGo
+    web_search_context: Optional[List[Dict[str, Any]]]
+    
+    # Thread-safe status update callback function for Telegram UI
+    status_callback: Optional[Any]
 
     # --- Parsed Details ---
     # Parsed reminder details if intent is 'reminder' (e.g., {'text': 'buy milk', 'trigger_time': '2026-06-25T17:00:00'})

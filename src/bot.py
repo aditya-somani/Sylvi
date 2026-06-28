@@ -504,11 +504,30 @@ async def text_and_link_handler(update: Update, context: ContextTypes.DEFAULT_TY
         ist = timezone(timedelta(hours=5, minutes=30))
         current_time_ist = datetime.now(ist).isoformat()
         
+        # Send a placeholder message to give immediate visual typing/thinking feedback
+        processing_msg = await update.message.reply_text(
+            "⏳ Thinking...",
+            reply_to_message_id=update.message.message_id,
+            parse_mode="Markdown"
+        )
+        
+        async def update_status(status_text: str):
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=processing_msg.message_id,
+                    text=status_text,
+                    parse_mode="Markdown"
+                )
+            except Exception as edit_err:
+                logger.debug(f"Status update failed: {edit_err}")
+
         final_state = await query_graph.ainvoke({
             "query": query_text,
             "chat_id": chat_id,
             "current_time": current_time_ist,
-            "chat_history": chat_history
+            "chat_history": chat_history,
+            "status_callback": update_status
         })
         
         answer = final_state.get("answer") or "Sorry, I couldn't formulate a response."
@@ -517,12 +536,36 @@ async def text_and_link_handler(update: Update, context: ContextTypes.DEFAULT_TY
         db.add_chat_message(chat_id, "user", text)
         db.add_chat_message(chat_id, "assistant", answer)
         
-        await update.message.reply_text(
-            answer,
-            reply_to_message_id=update.message.message_id
-        )
+        # Update the placeholder with the final answer
+        try:
+            await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=processing_msg.message_id,
+                text=answer,
+                parse_mode="Markdown"
+            )
+        except Exception as md_err:
+            logger.warning(f"Markdown edit failed, falling back to raw text: {md_err}")
+            await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=processing_msg.message_id,
+                text=answer
+            )
+            
     except Exception as e:
         logger.exception("Error during Query Graph execution")
+        if 'processing_msg' in locals():
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=processing_msg.message_id,
+                    text=f"❌ **Query Failed**\n\nSorry, I encountered an error while processing your request:\n`{str(e)}`",
+                    parse_mode="Markdown"
+                )
+                return
+            except Exception:
+                pass
+                
         await update.message.reply_text(
             f"❌ **Query Failed**\n\nSorry, I encountered an error while processing your request:\n`{str(e)}`",
             reply_to_message_id=update.message.message_id,

@@ -16,7 +16,8 @@ from src.prompts import (
     REMINDER_SYSTEM_PROMPT,
     QUERY_OPTIMIZER_SYSTEM_PROMPT,
     RAG_GENERATION_SYSTEM_PROMPT,
-    FACT_DELETION_SYSTEM_PROMPT
+    FACT_DELETION_SYSTEM_PROMPT,
+    SEARCH_DECIDER_SYSTEM_PROMPT
 )
 
 logger = logging.getLogger(__name__)
@@ -33,6 +34,10 @@ class ReminderExtractor(BaseModel):
 
 class QueryOptimizer(BaseModel):
     search_query: str
+
+class SearchDecider(BaseModel):
+    needs_search: bool
+    search_query: Optional[str]
 
 
 # --- Query Nodes ---
@@ -149,6 +154,63 @@ def retrieval_node(state: QueryState) -> Dict[str, Any]:
     }
 
 
+async def web_search_node(state: QueryState) -> Dict[str, Any]:
+    """
+    Decides if the query needs real-time web search based on loaded SQLite/Pinecone facts.
+    If yes, updates Telegram status and runs a DuckDuckGo search.
+    """
+    query = state["query"]
+    profile_facts = state.get("profile_facts") or []
+    pinecone_context = state.get("pinecone_context") or []
+    status_callback = state.get("status_callback")
+    
+    # Format current facts for the search decision
+    facts_str = "No profile facts or memories available."
+    if profile_facts or pinecone_context:
+        facts_list = []
+        for fact in profile_facts:
+            facts_list.append(f"- Fact: {fact['fact']}")
+        for match in pinecone_context:
+            meta = match.get("metadata") or {}
+            text = meta.get("text", "")
+            facts_list.append(f"- Memory Document: {text}")
+        facts_str = "\n".join(facts_list)
+        
+    llm_service = LLMService()
+    
+    # Call decider
+    decision = llm_service.generate_structured_groq(
+        prompt=(
+            f"USER MEMORIES & FACTS:\n{facts_str}\n\n"
+            f"USER QUERY: {query}"
+        ),
+        schema=SearchDecider,
+        system_instruction=SEARCH_DECIDER_SYSTEM_PROMPT,
+        temperature=0.0
+    )
+    
+    if decision.needs_search and decision.search_query:
+        # Trigger dynamic status callback on Telegram if registered
+        if status_callback:
+            try:
+                await status_callback("🔍 Searching the web...")
+            except Exception as callback_err:
+                logger.warning(f"Failed to update Telegram status callback: {str(callback_err)}")
+                
+        # Run DuckDuckGo Search
+        from src.services.search import WebSearchService
+        search_service = WebSearchService()
+        search_results = search_service.search(decision.search_query)
+        
+        return {
+            "web_search_context": search_results
+        }
+        
+    return {
+        "web_search_context": []
+    }
+
+
 def generation_node(state: QueryState) -> Dict[str, Any]:
     """Synthesizes final RAG answer using ChatGroq."""
     llm_service = LLMService()
@@ -157,6 +219,7 @@ def generation_node(state: QueryState) -> Dict[str, Any]:
     profile_facts = state.get("profile_facts") or []
     pinecone_context = state.get("pinecone_context") or []
     active_reminders = state.get("active_reminders") or []
+    web_search_context = state.get("web_search_context") or []
     
     # Format SQLite Profile section
     profile_section = "No stored profile facts found about the user."
@@ -170,6 +233,18 @@ def generation_node(state: QueryState) -> Dict[str, Any]:
             f"- '{r['reminder_text']}' scheduled for {r['trigger_time']}"
             for r in active_reminders
         )
+        
+    # Format Web Search results
+    search_section = "No recent web search results available."
+    if web_search_context:
+        formatted_results = []
+        for idx, result in enumerate(web_search_context):
+            ref = f"[{idx + 1}] Source: Web Search - {result.get('title')}"
+            link = result.get("link")
+            if link:
+                ref += f" ({link})"
+            formatted_results.append(f"{ref}\nContent:\n{result.get('snippet')}\n")
+        search_section = "\n---\n".join(formatted_results)
         
     # Format Pinecone context matches
     context_section = "No saved document context matches found in vector memory."
@@ -195,6 +270,8 @@ def generation_node(state: QueryState) -> Dict[str, Any]:
         f"{profile_section}\n\n"
         f"ACTIVE PENDING REMINDERS:\n"
         f"{reminders_section}\n\n"
+        f"WEB SEARCH RESULTS CONTEXT:\n"
+        f"{search_section}\n\n"
         f"SAVED VECTOR DOCUMENTS CONTEXT:\n"
         f"{context_section}\n\n"
         f"USER QUERY: {query}\n"
