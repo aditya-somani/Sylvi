@@ -48,13 +48,26 @@ class WebScraperService:
             
             # Remove excessive whitespace/newlines
             lines = [line.strip() for line in clean_text.splitlines() if line.strip()]
-            final_content = f"Title: {title}\n\n" + "\n".join(lines)
+            content_text_only = "\n".join(lines)
             
+            # Check for SPA/JavaScript-required boilerplates or empty content
+            lowercase_content = content_text_only.lower()
+            js_indicators = [
+                "javascript must be enabled",
+                "enable javascript",
+                "enable js",
+                "you need to enable javascript",
+                "requires javascript",
+                "please enable javascript"
+            ]
+            is_boilerplate = any(indicator in lowercase_content for indicator in js_indicators)
+            
+            if len(content_text_only.strip()) < 150 or is_boilerplate:
+                return f"[Webpage content could not be scraped due to system limitations (requires JavaScript/SPA)]\nURL: {url}"
+                
+            final_content = f"Title: {title}\n\n" + content_text_only
             return final_content
             
-        except httpx.HTTPStatusError as e:
-            logger.error(f"HTTP error occurred while scraping {url}: {str(e)}")
-            raise ValueError(f"Failed to access URL: HTTP {response.status_code}")
         except Exception as e:
-            logger.error(f"Failed to scrape URL {url}: {str(e)}")
-            raise ValueError(f"Error reading website content: {str(e)}")
+            logger.warning(f"Failed to scrape URL {url}: {str(e)}")
+            return f"[Webpage content could not be scraped due to system limitations (failed to fetch URL: {str(e)})]\nURL: {url}"

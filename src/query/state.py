@@ -15,6 +15,9 @@ class QueryState(TypedDict):
     # Passed in from the runner on startup (e.g., '2026-06-25T14:29:42')
     current_time: str
 
+    # The recent chat history messages
+    chat_history: Optional[List[Dict[str, str]]]
+
     # --- Routing & Intent ---
     # Determined by the Intent Router: 'chit_chat' | 'reminder' | 'retrieval' | 'profile_query'
     intent: Optional[str]

@@ -35,12 +35,15 @@ async def ingestion_worker(queue: asyncio.Queue, application) -> None:
         message_id = task["message_id"]
         input_type = task["input_type"]
         raw_content = task["raw_content"]
-        metadata = task["metadata"]
+        metadata = task["metadata"] or {}
         processing_msg_id = task.get("processing_msg_id")
         
+        silent = metadata.get("silent", False)
+        
         try:
-            # Let user know we are actively working on it
-            await application.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+            # Let user know we are actively working on it (only if not silent)
+            if not silent:
+                await application.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
             
             # Lazy import graph to avoid dependency cycles / slow starts
             from src.ingestion.graph import ingestion_graph
@@ -60,28 +63,79 @@ async def ingestion_worker(queue: asyncio.Queue, application) -> None:
                 except Exception as cleanup_err:
                     logger.warning(f"Failed to delete temp file {raw_content}: {str(cleanup_err)}")
             
-            # Generate friendly personalized confirmation response using LLM
-            success_text = "✅ Ingested successfully. I've indexed this content in your memory."
-            try:
-                processed_text = final_state.get("processed_text", "")
-                if processed_text:
-                    from src.services.llm import LLMService
-                    llm_service = LLMService()
-                    confirm_prompt = f"Input Type: {input_type}\nIngested Content:\n{processed_text}"
-                    response = llm_service.generate_groq(
-                        prompt=confirm_prompt,
-                        system_instruction=INGESTION_CONFIRM_SYSTEM_PROMPT,
-                        temperature=0.5
-                    )
-                    cleaned_resp = str(response).strip()
-                    if cleaned_resp:
-                        # Ensure we strip surrounding quotes if LLM added them
-                        if (cleaned_resp.startswith('"') and cleaned_resp.endswith('"')) or (cleaned_resp.startswith("'") and cleaned_resp.endswith("'")):
-                            cleaned_resp = cleaned_resp[1:-1].strip()
-                        success_text = cleaned_resp
-            except Exception as confirm_err:
-                logger.warning(f"Failed to generate dynamic confirmation response: {str(confirm_err)}")
-            if processing_msg_id:
+            # 1. Determine user text for history logging or voice query execution
+            user_text = ""
+            if input_type == "link":
+                user_text = metadata.get("user_annotation") or ""
+            elif input_type == "image":
+                user_text = metadata.get("caption") or ""
+            elif input_type == "voice":
+                # For voice, final_state["processed_text"] has the transcription
+                proc_text = final_state.get("processed_text", "")
+                if "\n" in proc_text:
+                    user_text = proc_text.split("\n", 1)[1].strip()
+                else:
+                    user_text = proc_text
+                    
+            db = ProfileMemoryDB()
+            
+            # 2. If it's a voice note, we run conversational query node if there's any text!
+            # Since a voice note is processed asynchronously in the background worker,
+            # we run its query node here and edit the processing_msg placeholder.
+            if input_type == "voice" and user_text.strip():
+                # Run the query graph asynchronously to find the intent
+                from src.query.graph import query_graph
+                from datetime import timezone, timedelta
+                ist = timezone(timedelta(hours=5, minutes=30))
+                current_time_ist = datetime.now(ist).isoformat()
+                
+                chat_history = db.get_chat_history(str(chat_id), limit=15)
+                
+                query_state = await query_graph.ainvoke({
+                    "query": user_text,
+                    "chat_id": str(chat_id),
+                    "current_time": current_time_ist,
+                    "chat_history": chat_history,
+                    "status_callback": None
+                })
+                
+                success_text = query_state.get("answer") or "Sorry, I had trouble formulating a response."
+                
+                # Add to chat history
+                db.add_chat_message(str(chat_id), "user", f"[Voice Note] {user_text}")
+                db.add_chat_message(str(chat_id), "assistant", success_text)
+                
+            else:
+                # Generate friendly personalized confirmation response using LLM (original behavior)
+                success_text = "✅ Ingested successfully. I've indexed this content in your memory."
+                try:
+                    processed_text = final_state.get("processed_text", "")
+                    if processed_text:
+                        from src.services.llm import LLMService
+                        llm_service = LLMService()
+                        confirm_prompt = f"Input Type: {input_type}\nIngested Content:\n{processed_text}"
+                        response = llm_service.generate_groq(
+                            prompt=confirm_prompt,
+                            system_instruction=INGESTION_CONFIRM_SYSTEM_PROMPT,
+                            temperature=0.5
+                        )
+                        cleaned_resp = str(response).strip()
+                        if cleaned_resp:
+                            if (cleaned_resp.startswith('"') and cleaned_resp.endswith('"')) or (cleaned_resp.startswith("'") and cleaned_resp.endswith("'")):
+                                cleaned_resp = cleaned_resp[1:-1].strip()
+                            success_text = cleaned_resp
+                except Exception as confirm_err:
+                    logger.warning(f"Failed to generate dynamic confirmation response: {str(confirm_err)}")
+                
+                # If this background ingestion was not silent (i.e. pure ingestion without foreground conversation),
+                # save it to chat history so future messages have context about this ingestion!
+                if not silent:
+                    user_msg_for_history = metadata.get("original_text") or raw_content
+                    db.add_chat_message(str(chat_id), "user", user_msg_for_history)
+                    db.add_chat_message(str(chat_id), "assistant", success_text)
+            
+            # Send message/edit placeholder only if NOT silent
+            if not silent and processing_msg_id:
                 try:
                     await application.bot.edit_message_text(
                         chat_id=chat_id,
@@ -91,51 +145,47 @@ async def ingestion_worker(queue: asyncio.Queue, application) -> None:
                     )
                 except Exception as edit_err:
                     logger.warning(f"Failed to edit success message: {str(edit_err)}")
-                    # Fallback to direct message
                     await application.bot.send_message(
                         chat_id=chat_id,
                         text=success_text,
                         reply_to_message_id=message_id,
                         parse_mode="Markdown"
                     )
-            else:
+            elif not silent:
                 await application.bot.send_message(
                     chat_id=chat_id,
                     text=success_text,
                     reply_to_message_id=message_id,
                     parse_mode="Markdown"
                 )
-            
+                
         except Exception as e:
             logger.exception(f"Error processing background ingestion task for chat {chat_id}")
-            
-            # For failures, edit the "Processing..." message to show failure status
-            if processing_msg_id:
+            if not silent:
+                # Notify failure only if not silent
+                if processing_msg_id:
+                    try:
+                        await application.bot.edit_message_text(
+                            chat_id=chat_id,
+                            message_id=processing_msg_id,
+                            text="❌ Ingestion Failed.",
+                            parse_mode="Markdown"
+                        )
+                    except Exception as edit_err:
+                        logger.warning(f"Failed to edit failure message status: {str(edit_err)}")
                 try:
-                    await application.bot.edit_message_text(
+                    await application.bot.send_message(
                         chat_id=chat_id,
-                        message_id=processing_msg_id,
-                        text="❌ Ingestion Failed.",
+                        text=(
+                            f"❌ **Ingestion Failed**\n\n"
+                            f"I had trouble digesting that memory.\n"
+                            f"**Error**: {str(e)}"
+                        ),
+                        reply_to_message_id=message_id,
                         parse_mode="Markdown"
                     )
-                except Exception as edit_err:
-                    logger.warning(f"Failed to edit failure message status: {str(edit_err)}")
-            
-            # Notify user of failure as a NEW reply to their original message, detailing the error context
-            try:
-                await application.bot.send_message(
-                    chat_id=chat_id,
-                    text=(
-                        f"❌ **Ingestion Failed**\n\n"
-                        f"I had trouble digesting that memory.\n"
-                        f"**Error**: {str(e)}"
-                    ),
-                    reply_to_message_id=message_id,
-                    parse_mode="Markdown"
-                )
-            except Exception as notify_err:
-                logger.error(f"Failed to send failure notification to user: {str(notify_err)}")
-                
+                except Exception as notify_err:
+                    logger.error(f"Failed to send failure notification to user: {str(notify_err)}")
         finally:
             queue.task_done()
 
@@ -301,6 +351,106 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 # --- Media Ingestion Queue Handlers ---
 
+async def run_conversational_query(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    query_text: str,
+    original_msg_text: str = None
+) -> None:
+    """Helper to run the conversational RAG query graph and manage chat history."""
+    chat_id = str(update.effective_chat.id)
+    db = ProfileMemoryDB()
+    reply_to = update.message.reply_to_message
+    
+    # Load recent chat history context from database
+    chat_history = db.get_chat_history(chat_id, limit=15)
+    
+    # Formulate query context if replying to a bot response
+    if reply_to:
+        ref_text = reply_to.text or reply_to.caption or "media file"
+        if reply_to.from_user and reply_to.from_user.is_bot:
+            query_text = f"[Context: Replying to Sylvi's message: \"{ref_text}\"]\n\nUser Query: {query_text}"
+        else:
+            query_text = f"[Context: Replying to message: \"{ref_text}\"]\n\nUser Query: {query_text}"
+            
+    try:
+        from datetime import timezone, timedelta
+        ist = timezone(timedelta(hours=5, minutes=30))
+        current_time_ist = datetime.now(ist).isoformat()
+        
+        # Send a placeholder message to give immediate visual typing/thinking feedback
+        processing_msg = await update.message.reply_text(
+            "⏳ Thinking...",
+            reply_to_message_id=update.message.message_id,
+            parse_mode="Markdown"
+        )
+        
+        async def update_status(status_text: str):
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=processing_msg.message_id,
+                    text=status_text,
+                    parse_mode="Markdown"
+                )
+            except Exception as edit_err:
+                logger.debug(f"Status update failed: {edit_err}")
+
+        # Lazy import graph to avoid circular dependency
+        from src.query.graph import query_graph
+
+        final_state = await query_graph.ainvoke({
+            "query": query_text,
+            "chat_id": chat_id,
+            "current_time": current_time_ist,
+            "chat_history": chat_history,
+            "status_callback": update_status
+        })
+        
+        answer = final_state.get("answer") or "Sorry, I couldn't formulate a response."
+        
+        # Add user query and assistant response to SQLite chat history
+        log_text = original_msg_text if original_msg_text else query_text
+        db.add_chat_message(chat_id, "user", log_text)
+        db.add_chat_message(chat_id, "assistant", answer)
+        
+        # Update the placeholder with the final answer
+        try:
+            await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=processing_msg.message_id,
+                text=answer,
+                parse_mode="Markdown"
+            )
+        except Exception as md_err:
+            logger.warning(f"Markdown edit failed, falling back to raw text: {md_err}")
+            await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=processing_msg.message_id,
+                text=answer
+            )
+            
+    except Exception as e:
+        logger.exception("Error during Query Graph execution")
+        if 'processing_msg' in locals():
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=processing_msg.message_id,
+                    text=f"❌ **Query Failed**\n\nSorry, I encountered an error while processing your request:\n`{str(e)}`",
+                    parse_mode="Markdown"
+                )
+                return
+            except Exception:
+                pass
+                
+        await update.message.reply_text(
+            f"❌ **Query Failed**\n\nSorry, I encountered an error while processing your request:\n`{str(e)}`",
+            reply_to_message_id=update.message.message_id,
+            parse_mode="Markdown"
+        )
+
+
 async def voice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Downloads voice file and places it in the background worker queue."""
     voice = update.message.voice
@@ -343,17 +493,22 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     photo = update.message.photo[-1]
     caption = update.message.caption or ""
     
-    # Send status message
-    processing_msg = await update.message.reply_text(
-        "⏳ Processing...",
-        reply_to_message_id=update.message.message_id
-    )
-    
     # Download file
     file = await context.bot.get_file(photo.file_id)
     file_path = os.path.join("temp_downloads", f"{photo.file_id}.jpg")
     await file.download_to_drive(file_path)
     
+    silent = bool(caption.strip())
+    processing_msg_id = None
+    
+    if not silent:
+        # Send status message only if there's no caption (pure ingestion)
+        processing_msg = await update.message.reply_text(
+            "⏳ Processing...",
+            reply_to_message_id=update.message.message_id
+        )
+        processing_msg_id = processing_msg.message_id
+        
     # Push to queue
     queue = context.application.bot_data["ingestion_queue"]
     await queue.put({
@@ -361,14 +516,20 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "message_id": update.message.message_id,
         "input_type": "image",
         "raw_content": file_path,
-        "processing_msg_id": processing_msg.message_id,
+        "processing_msg_id": processing_msg_id,
         "metadata": {
             "source": "telegram",
             "message_id": str(update.message.message_id),
             "chat_id": str(update.effective_chat.id),
-            "caption": caption
+            "caption": caption,
+            "silent": silent,
+            "original_text": f"[Photo] {caption}".strip() if caption else "[Photo]"
         }
     })
+    
+    # If there is a caption, run the conversational flow immediately
+    if silent:
+        await run_conversational_query(update, context, query_text=caption, original_msg_text=f"[Photo] {caption}".strip())
 
 
 async def text_and_link_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -380,7 +541,6 @@ async def text_and_link_handler(update: Update, context: ContextTypes.DEFAULT_TY
     """
     text = update.message.text or ""
     chat_id = str(update.effective_chat.id)
-    db = ProfileMemoryDB()
     
     # 1. Check for replies first (Context Ingestion via Reply)
     reply_to = update.message.reply_to_message
@@ -396,34 +556,48 @@ async def text_and_link_handler(update: Update, context: ContextTypes.DEFAULT_TY
                     rep_urls.append(entity.url)
                     
         if rep_urls:
+            silent = bool(text.strip())
+            processing_msg_id = None
+            if not silent:
+                processing_msg = await update.message.reply_text(
+                    "⏳ Processing...",
+                    reply_to_message_id=update.message.message_id
+                )
+                processing_msg_id = processing_msg.message_id
+                
             queue = context.application.bot_data["ingestion_queue"]
-            processing_msg = await update.message.reply_text(
-                "⏳ Processing...",
-                reply_to_message_id=update.message.message_id
-            )
             for url in rep_urls:
                 await queue.put({
                     "chat_id": update.effective_chat.id,
                     "message_id": update.message.message_id,
                     "input_type": "link",
                     "raw_content": url,
-                    "processing_msg_id": processing_msg.message_id,
+                    "processing_msg_id": processing_msg_id,
                     "metadata": {
                         "source": "telegram",
                         "message_id": str(update.message.message_id),
                         "source_url": url,
-                        "user_annotation": text
+                        "user_annotation": text,
+                        "silent": silent,
+                        "chat_id": chat_id,
+                        "original_text": f"[Reply to link] {text}".strip()
                     }
                 })
+            if silent:
+                await run_conversational_query(update, context, query_text=text, original_msg_text=text)
             return
             
         # Check if replied-to message has a photo
         if reply_to.photo:
             photo = reply_to.photo[-1]
-            processing_msg = await update.message.reply_text(
-                "⏳ Processing...",
-                reply_to_message_id=update.message.message_id
-            )
+            silent = bool(text.strip())
+            processing_msg_id = None
+            if not silent:
+                processing_msg = await update.message.reply_text(
+                    "⏳ Processing...",
+                    reply_to_message_id=update.message.message_id
+                )
+                processing_msg_id = processing_msg.message_id
             
             file = await context.bot.get_file(photo.file_id)
             file_path = os.path.join("temp_downloads", f"{photo.file_id}.jpg")
@@ -435,13 +609,18 @@ async def text_and_link_handler(update: Update, context: ContextTypes.DEFAULT_TY
                 "message_id": update.message.message_id,
                 "input_type": "image",
                 "raw_content": file_path,
-                "processing_msg_id": processing_msg.message_id,
+                "processing_msg_id": processing_msg_id,
                 "metadata": {
                     "source": "telegram",
                     "message_id": str(update.message.message_id),
-                    "caption": text
+                    "caption": text,
+                    "silent": silent,
+                    "chat_id": chat_id,
+                    "original_text": f"[Photo Reply] {text}".strip()
                 }
             })
+            if silent:
+                await run_conversational_query(update, context, query_text=text, original_msg_text=text)
             return
 
     # 2. Parse for URLs in the text itself
@@ -461,119 +640,39 @@ async def text_and_link_handler(update: Update, context: ContextTypes.DEFAULT_TY
             user_annot = user_annot.replace(url, "")
         user_annot = user_annot.strip()
         
+        silent = bool(user_annot)
+        processing_msg_id = None
+        if not silent:
+            processing_msg = await update.message.reply_text(
+                "⏳ Processing...",
+                reply_to_message_id=update.message.message_id
+            )
+            processing_msg_id = processing_msg.message_id
+            
         queue = context.application.bot_data["ingestion_queue"]
-        processing_msg = await update.message.reply_text(
-            "⏳ Processing...",
-            reply_to_message_id=update.message.message_id
-        )
         for url in urls:
             await queue.put({
                 "chat_id": update.effective_chat.id,
                 "message_id": update.message.message_id,
                 "input_type": "link",
                 "raw_content": url,
-                "processing_msg_id": processing_msg.message_id,
+                "processing_msg_id": processing_msg_id,
                 "metadata": {
                     "source": "telegram",
                     "message_id": str(update.message.message_id),
                     "source_url": url,
                     "user_annotation": user_annot,
-                    "chat_id": str(update.effective_chat.id)
+                    "silent": silent,
+                    "chat_id": str(update.effective_chat.id),
+                    "original_text": text
                 }
             })
+        if silent:
+            await run_conversational_query(update, context, query_text=text, original_msg_text=text)
         return
 
     # 3. Process conversational RAG Query
-    # Send interactive chat action typing indicator
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
-    
-    # Lazy import graph to avoid circular dependency
-    from src.query.graph import query_graph
-    
-    # Load recent chat history context from database
-    chat_history = db.get_chat_history(chat_id, limit=15)
-    
-    # Formulate query context if replying to a bot response
-    query_text = text
-    if reply_to:
-        ref_text = reply_to.text or reply_to.caption or "media file"
-        if reply_to.from_user and reply_to.from_user.is_bot:
-            query_text = f"[Context: Replying to Sylvi's message: \"{ref_text}\"]\n\nUser Query: {text}"
-        else:
-            query_text = f"[Context: Replying to message: \"{ref_text}\"]\n\nUser Query: {text}"
-            
-    try:
-        from datetime import timezone, timedelta
-        ist = timezone(timedelta(hours=5, minutes=30))
-        current_time_ist = datetime.now(ist).isoformat()
-        
-        # Send a placeholder message to give immediate visual typing/thinking feedback
-        processing_msg = await update.message.reply_text(
-            "⏳ Thinking...",
-            reply_to_message_id=update.message.message_id,
-            parse_mode="Markdown"
-        )
-        
-        async def update_status(status_text: str):
-            try:
-                await context.bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=processing_msg.message_id,
-                    text=status_text,
-                    parse_mode="Markdown"
-                )
-            except Exception as edit_err:
-                logger.debug(f"Status update failed: {edit_err}")
-
-        final_state = await query_graph.ainvoke({
-            "query": query_text,
-            "chat_id": chat_id,
-            "current_time": current_time_ist,
-            "chat_history": chat_history,
-            "status_callback": update_status
-        })
-        
-        answer = final_state.get("answer") or "Sorry, I couldn't formulate a response."
-        
-        # Add user query (original text) and assistant response to SQLite chat history
-        db.add_chat_message(chat_id, "user", text)
-        db.add_chat_message(chat_id, "assistant", answer)
-        
-        # Update the placeholder with the final answer
-        try:
-            await context.bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=processing_msg.message_id,
-                text=answer,
-                parse_mode="Markdown"
-            )
-        except Exception as md_err:
-            logger.warning(f"Markdown edit failed, falling back to raw text: {md_err}")
-            await context.bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=processing_msg.message_id,
-                text=answer
-            )
-            
-    except Exception as e:
-        logger.exception("Error during Query Graph execution")
-        if 'processing_msg' in locals():
-            try:
-                await context.bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=processing_msg.message_id,
-                    text=f"❌ **Query Failed**\n\nSorry, I encountered an error while processing your request:\n`{str(e)}`",
-                    parse_mode="Markdown"
-                )
-                return
-            except Exception:
-                pass
-                
-        await update.message.reply_text(
-            f"❌ **Query Failed**\n\nSorry, I encountered an error while processing your request:\n`{str(e)}`",
-            reply_to_message_id=update.message.message_id,
-            parse_mode="Markdown"
-        )
+    await run_conversational_query(update, context, query_text=text, original_msg_text=text)
 
 
 # --- Application Builder Hook ---

@@ -39,10 +39,13 @@ INTENT_ROUTER_SYSTEM_PROMPT = (
     "You are the intent router for Sylvi, a stateful personal memory copilot.\n"
     "Your task is to classify the user's query into one of these intents:\n"
     "1. 'chit_chat': Simple greetings ('hi', 'hello', 'hey'), thank yous, bye, or basic polite banter.\n"
-    "2. 'reminder': The user wants to schedule a reminder (e.g., 'remind me to...', 'set a reminder').\n"
+    "2. 'reminder': The user wants to schedule a reminder (e.g., 'remind me to...', 'set a reminder', 'remind me about this after...').\n"
     "3. 'profile_query': The user is asking about details they expect you to know about them personally, "
     "their preferences, or settings (e.g., 'What is my favorite language?', 'What do you know about me?').\n"
-    "4. 'retrieval': The user is searching their saved documents, web links, or transcripts (e.g., 'What did I save about LangGraph?')."
+    "4. 'retrieval': The user is searching their saved documents, web links, or transcripts (e.g., 'What did I save about LangGraph?').\n\n"
+    "IMPORTANT: Analyze the provided chat history to resolve context and pronouns (like 'this', 'that', 'it', 'link') "
+    "in the user's message. For example, if a user says 'remind me about this after 30 seconds', and the chat history shows they just "
+    "sent a link or mentioned making edits, they want to set a reminder about that topic/link. Classify the intent as 'reminder'."
 )
 
 CHITCHAT_SYSTEM_PROMPT = (
@@ -56,7 +59,11 @@ REMINDER_SYSTEM_PROMPT = (
     "Extract the task description to be reminded of and resolve the trigger time to absolute YYYY-MM-DDTHH:MM:SS format.\n"
     "Make sure to correctly resolve relative offsets (like 'in 5 minutes' or 'tomorrow morning') by adding to the current time.\n"
     "- If user says 'in the afternoon', schedule for 14:00:00 of the corresponding day.\n"
-    "- If user says 'tomorrow morning', schedule for 09:00:00 next day.\n"
+    "- If user says 'tomorrow morning', schedule for 09:00:00 next day.\n\n"
+    "Use the provided chat history to resolve any references or pronouns (like 'this', 'that', 'it', 'link', 'page') "
+    "in the user's query. For example, if the query is 'remind me about this after 30 sec' and the history contains a "
+    "message about 'make edits on this Notion requirements link', the reminder description should be resolved to "
+    "'make edits on the Notion requirements link'."
 )
 
 QUERY_OPTIMIZER_SYSTEM_PROMPT = (

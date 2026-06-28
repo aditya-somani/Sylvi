@@ -48,12 +48,27 @@ def intent_router_node(state: QueryState) -> Dict[str, Any]:
     This is designed to be extremely fast and lightweight.
     """
     query = state["query"]
-    llm_service = LLMService()
+    chat_history = state.get("chat_history") or []
     
+    llm_service = LLMService()
     system_instruction = INTENT_ROUTER_SYSTEM_PROMPT
     
+    # Format chat history context for the LLM
+    history_str = ""
+    if chat_history:
+        history_list = []
+        for msg in chat_history:
+            role_name = "User" if msg["role"] == "user" else "Sylvi"
+            history_list.append(f"{role_name}: {msg['content']}")
+        history_str = "\n".join(history_list)
+        
+    if history_str:
+        prompt = f"Recent Chat History:\n{history_str}\n\nUser Message: {query}"
+    else:
+        prompt = f"User Message: {query}"
+        
     classification = llm_service.generate_structured_groq(
-        prompt=f"User Message: {query}",
+        prompt=prompt,
         schema=IntentClassification,
         system_instruction=system_instruction,
         temperature=0.0
@@ -82,13 +97,27 @@ def reminder_node(state: QueryState) -> Dict[str, Any]:
     chat_id = state["chat_id"]
     query = state["query"]
     current_time = state["current_time"]
+    chat_history = state.get("chat_history") or []
     
     llm_service = LLMService()
-    
     system_instruction = REMINDER_SYSTEM_PROMPT.format(current_time=current_time)
     
+    # Format chat history context for the LLM
+    history_str = ""
+    if chat_history:
+        history_list = []
+        for msg in chat_history:
+            role_name = "User" if msg["role"] == "user" else "Sylvi"
+            history_list.append(f"{role_name}: {msg['content']}")
+        history_str = "\n".join(history_list)
+        
+    if history_str:
+        prompt = f"Recent Chat History:\n{history_str}\n\nUser Query: {query}"
+    else:
+        prompt = f"User Query: {query}"
+        
     extracted = llm_service.generate_structured_groq(
-        prompt=f"User Query: {query}",
+        prompt=prompt,
         schema=ReminderExtractor,
         system_instruction=system_instruction,
         temperature=0.0
