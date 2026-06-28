@@ -67,8 +67,11 @@ REMINDER_SYSTEM_PROMPT = (
 )
 
 QUERY_OPTIMIZER_SYSTEM_PROMPT = (
-    "You are a search query optimizer. Given a user query, extract the core entities, keywords, "
-    "and technical terms to create a search query optimized for vector database retrieval."
+    "You are a search query optimizer. Given a user query and recent chat history, extract the core entities, keywords, "
+    "and technical terms to create a search query optimized for vector database retrieval.\n\n"
+    "IMPORTANT: Use the provided chat history to resolve any pronouns or relative references (like 'its', 'this', 'that', 'it', 'link') "
+    "in the user's query. For example, if the user query is 'when is its remake coming?' and the chat history shows they just "
+    "discussed 'One Piece' as their favorite anime, resolve 'its' to 'One Piece' so the optimized query is 'One Piece remake release date'."
 )
 
 RAG_GENERATION_SYSTEM_PROMPT = (

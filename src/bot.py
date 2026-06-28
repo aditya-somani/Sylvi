@@ -105,6 +105,25 @@ async def ingestion_worker(queue: asyncio.Queue, application) -> None:
                 db.add_chat_message(str(chat_id), "user", f"[Voice Note] {user_text}")
                 db.add_chat_message(str(chat_id), "assistant", success_text)
                 
+                # Trigger background fact extraction silently
+                context_list = []
+                pinecone_ctx = query_state.get("pinecone_context") or []
+                for match in pinecone_ctx:
+                    meta = match.get("metadata") or {}
+                    text = meta.get("text", "")
+                    if text:
+                        context_list.append(text)
+                context_str = "\n".join(context_list)
+                
+                asyncio.create_task(
+                    extract_and_save_facts_background(
+                        chat_id=str(chat_id),
+                        query=f"[Voice Note] {user_text}",
+                        answer=success_text,
+                        context_str=context_str
+                    )
+                )
+                
             else:
                 # Generate friendly personalized confirmation response using LLM (original behavior)
                 success_text = "✅ Ingested successfully. I've indexed this content in your memory."
@@ -290,8 +309,9 @@ async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 async def facts_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Queries and renders stored profile facts, providing interactive buttons for deletion."""
+    chat_id = str(update.effective_chat.id)
     db = ProfileMemoryDB()
-    facts = db.get_all_facts()
+    facts = db.get_all_facts(chat_id)
     
     if not facts:
         await update.message.reply_text(
@@ -350,6 +370,54 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 # --- Media Ingestion Queue Handlers ---
+
+async def extract_and_save_facts_background(chat_id: str, query: str, answer: str, context_str: str) -> None:
+    """Extracts and saves new profile facts in the background using LLM."""
+    try:
+        from src.services.llm import LLMService
+        from pydantic import BaseModel
+        from typing import List
+        
+        class FactsExtractor(BaseModel):
+            facts: List[str]
+            
+        db = ProfileMemoryDB()
+        existing_facts = db.get_all_facts(chat_id)
+        existing_str = "\n".join(f"- {f['fact']}" for f in existing_facts) if existing_facts else "None"
+        
+        llm_service = LLMService()
+        
+        prompt = (
+            f"Existing Facts:\n{existing_str}\n\n"
+            f"Context Documents:\n{context_str}\n\n"
+            f"User Message: {query}\n"
+            f"Assistant Response: {answer}"
+        )
+        
+        system_instruction = (
+            "You are a profile memory manager. Your task is to analyze the user message, "
+            "assistant response, and context documents to extract any personal facts, preferences, "
+            "location, names, or favorite things that the user has shared about themselves.\n\n"
+            "Formulate each fact as a simple, standalone declarative sentence (e.g. 'User's favorite anime is One Piece', 'User is based in Jawad, MP, India').\n"
+            "IMPORTANT: Do not extract facts that are already present in the 'Existing Facts' list.\n"
+            "Ensure the facts are accurate, start with 'User' or 'User's', and are directly supported by the text. Do not hallucinate or assume facts.\n"
+            "If no new facts are shared, return an empty list."
+        )
+        
+        extracted = llm_service.generate_structured_groq(
+            prompt=prompt,
+            schema=FactsExtractor,
+            system_instruction=system_instruction,
+            temperature=0.0
+        )
+        
+        if extracted.facts:
+            for fact in extracted.facts:
+                db.add_fact(chat_id, fact)
+                logger.info(f"Extracted and saved new fact: '{fact}' for chat {chat_id}")
+    except Exception as e:
+        logger.error(f"Failed in background fact extraction: {e}")
+
 
 async def run_conversational_query(
     update: Update,
@@ -413,6 +481,25 @@ async def run_conversational_query(
         log_text = original_msg_text if original_msg_text else query_text
         db.add_chat_message(chat_id, "user", log_text)
         db.add_chat_message(chat_id, "assistant", answer)
+        
+        # Trigger background fact extraction silently
+        context_list = []
+        pinecone_ctx = final_state.get("pinecone_context") or []
+        for match in pinecone_ctx:
+            meta = match.get("metadata") or {}
+            text = meta.get("text", "")
+            if text:
+                context_list.append(text)
+        context_str = "\n".join(context_list)
+        
+        asyncio.create_task(
+            extract_and_save_facts_background(
+                chat_id=chat_id,
+                query=log_text,
+                answer=answer,
+                context_str=context_str
+            )
+        )
         
         # Update the placeholder with the final answer
         try:

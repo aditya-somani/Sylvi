@@ -160,6 +160,7 @@ def retrieval_node(state: QueryState) -> Dict[str, Any]:
     Uses ChatGroq to optimize the query into search keywords before querying Pinecone.
     """
     query = state["query"]
+    chat_history = state.get("chat_history") or []
     
     llm_service = LLMService()
     vector_db = VectorDBService()
@@ -172,8 +173,15 @@ def retrieval_node(state: QueryState) -> Dict[str, Any]:
     # 2. Optimize query for semantic search
     system_instruction = QUERY_OPTIMIZER_SYSTEM_PROMPT
     
+    # Format compact history (last 8 messages) to resolve pronouns in optimized queries
+    history_str = _format_chat_history(chat_history, max_messages=8, max_chars_per_msg=200)
+    if history_str:
+        prompt = f"Recent Chat History:\n{history_str}\n\nRaw Query: {query}"
+    else:
+        prompt = f"Raw Query: {query}"
+        
     optimized = llm_service.generate_structured_groq(
-        prompt=f"Raw Query: {query}",
+        prompt=prompt,
         schema=QueryOptimizer,
         system_instruction=system_instruction,
         temperature=0.0

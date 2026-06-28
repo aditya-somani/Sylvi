@@ -230,17 +230,20 @@ class ProfileMemoryDB:
             conn.close()
 
     def get_chat_history(self, chat_id: str, limit: int = 15) -> List[Dict[str, str]]:
-        """Retrieves the latest chat history for a given chat_id."""
+        """Retrieves the latest chat history for a given chat_id (in chronological order)."""
         conn = self._get_connection()
         try:
             with conn:
                 with conn.cursor() as cursor:
                     cursor.execute(
                         """
-                        SELECT role, content FROM chat_history 
-                        WHERE chat_id = %s 
-                        ORDER BY created_at ASC 
-                        LIMIT %s
+                        SELECT role, content FROM (
+                            SELECT role, content, created_at FROM chat_history 
+                            WHERE chat_id = %s 
+                            ORDER BY created_at DESC 
+                            LIMIT %s
+                        ) sub
+                        ORDER BY created_at ASC
                         """,
                         (chat_id, limit)
                     )
